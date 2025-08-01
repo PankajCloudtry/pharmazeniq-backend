@@ -1,28 +1,25 @@
 import streamlit as st
-from google.cloud import vision
-from google.oauth2 import service_account
-import os, io, re, base64
+import os, io, re, base64, json
 import pandas as pd
 import numpy as np
 import cv2
 from PIL import Image
 from rapidfuzz import process, fuzz
 from pdf2image import convert_from_bytes
+from google.cloud import vision
+from google.oauth2 import service_account
 
-# ─── BOOTSTRAP GOOGLE VISION CREDENTIALS FROM st.secrets ───────────────────
-vision_info = dict(st.secrets["vision"])
-credentials = service_account.Credentials.from_service_account_info(vision_info)
-client = vision.ImageAnnotatorClient(credentials=credentials)
-# ───────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────────
+# 1️⃣  Page config & header banner
+# ───────────────────────────────────────────────────────────────────────────────
+st.set_page_config(page_title="Pharmazeniq", page_icon="💊", layout="wide")
 
-# 1️⃣ Page config & header
-st.set_page_config("Pharmazeniq", "💊", layout="wide")
 if os.path.exists("assets/header_banner.png"):
     st.image("assets/header_banner.png", use_container_width=True)
 else:
     st.warning("⚠️ header_banner.png not found in assets/")
 
-# 1b️⃣ Enormous tabs CSS
+# Enormous tabs CSS
 st.markdown("""
     <style>
       [role="tablist"] [role="tab"] {
@@ -32,14 +29,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 2️⃣ Sidebar: animation, sort & support
+# ───────────────────────────────────────────────────────────────────────────────
+# 2️⃣  Sidebar: show animation.gif + filters + support
+# ───────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
     if os.path.exists("animation.gif"):
-        gif_bytes = open("animation.gif", "rb").read()
-        b64       = base64.b64encode(gif_bytes).decode()
+        b64 = base64.b64encode(open("animation.gif","rb").read()).decode()
         st.markdown(
-            f'<img src="data:image/gif;base64,{b64}" '
-            'style="width:100%;margin-bottom:1rem;">',
+            f'<img src="data:image/gif;base64,{b64}" style="width:100%;margin-bottom:1rem;">',
             unsafe_allow_html=True
         )
     else:
@@ -49,7 +46,19 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("Need help? 📧 support@pharmazeniq.com")
 
-# 3️⃣ Load data
+# ───────────────────────────────────────────────────────────────────────────────
+# 3️⃣  Google Vision client (from Streamlit Secrets)
+# ───────────────────────────────────────────────────────────────────────────────
+# In your Streamlit Cloud secrets.toml:
+# GOOGLE_CREDENTIALS = """{ ... your JSON ... }"""
+sa_json = st.secrets["GOOGLE_CREDENTIALS"]
+sa_info = json.loads(sa_json)
+credentials = service_account.Credentials.from_service_account_info(sa_info)
+client = vision.ImageAnnotatorClient(credentials=credentials)
+
+# ───────────────────────────────────────────────────────────────────────────────
+# 4️⃣  Load your medicine & vendor data
+# ───────────────────────────────────────────────────────────────────────────────
 @st.cache_data
 def load_data():
     meds_df   = pd.read_csv("data/medicines.csv")
@@ -59,7 +68,9 @@ def load_data():
 meds_df, vendor_df = load_data()
 name_to_id = dict(zip(meds_df.name, meds_df.id))
 
-# 4️⃣ OCR helpers
+# ───────────────────────────────────────────────────────────────────────────────
+# 5️⃣  OCR helpers: deskew, convert PDF→images, call Vision API
+# ───────────────────────────────────────────────────────────────────────────────
 def deskew_and_encode(img: Image.Image) -> bytes:
     arr  = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
@@ -82,21 +93,21 @@ def ocr_bytes(b: bytes) -> str:
     return resp.full_text_annotation.text or ""
 
 def extract_text(uploaded) -> str:
-    raw   = uploaded.read()
+    raw = uploaded.read()
     pages = []
-    if uploaded.type=="application/pdf":
+    if uploaded.type == "application/pdf":
         try:
             pages = convert_from_bytes(raw, dpi=300)
-        except:
+        except Exception:
             pages = []
     if not pages:
         pages = [Image.open(io.BytesIO(raw))]
-    texts = []
-    for pg in pages:
-        texts.append( ocr_bytes(deskew_and_encode(pg)) )
+    texts = [ocr_bytes(deskew_and_encode(pg)) for pg in pages]
     return "\n".join(texts)
 
-# 5️⃣ Normalize & fuzzy-match
+# ───────────────────────────────────────────────────────────────────────────────
+# 6️⃣  Fuzzy matching helpers
+# ───────────────────────────────────────────────────────────────────────────────
 def normalize(line: str) -> str:
     x = re.sub(r"^[\s\-\•\d\.]+","", line)
     x = re.sub(r"\b\d+(\.\d+)?\s?(mg|g|ml)\b","", x, flags=re.IGNORECASE)
@@ -112,10 +123,12 @@ def fuzzy_opts(key: str) -> list[str]:
         opts = [n for n in names if key in normalize(n)]
     return opts
 
-# 6️⃣ Build 3-step UI
+# ───────────────────────────────────────────────────────────────────────────────
+# 7️⃣  Build the 3‐step Streamlit UI
+# ───────────────────────────────────────────────────────────────────────────────
 tabs = st.tabs(["1. OCR", "2. Confirm", "3. Quotes"])
 
-# Tab 1: Upload Prescription
+# — Step 1: Upload & OCR —
 with tabs[0]:
     ico, col = st.columns([4,6])
     if os.path.exists("assets/RX Upload.svg"):
@@ -129,7 +142,7 @@ with tabs[0]:
     if "raw" in st.session_state:
         st.text_area("Extracted Text", st.session_state.raw, height=200)
 
-# Tab 2: Confirm Medicines
+# — Step 2: Confirm Medicines —
 with tabs[1]:
     ico, col = st.columns([4,6])
     if os.path.exists("assets/Confirm Medicine.svg"):
@@ -138,23 +151,26 @@ with tabs[1]:
     if "raw" not in st.session_state:
         col.info("🔍 Please complete Step 1 first.")
     else:
-        lines = [l for l in st.session_state.raw.split("\n")
-                 if any(tok in l.lower() for tok in ("tab","mg","cap"))]
+        lines = [
+            l for l in st.session_state.raw.split("\n")
+            if any(tok in l.lower() for tok in ("tab","mg","cap"))
+        ]
         if not lines:
             col.info("⚠️ No lines with “tab”/“mg”/“cap” found.")
         else:
             confirmed = []
             for idx,line in enumerate(lines,1):
                 opts = fuzzy_opts(normalize(line))
-                if not opts: continue
+                if not opts:
+                    continue
                 c1,c2 = st.columns([3,1])
                 med = c1.selectbox(f"{idx}. {line}", opts, key=f"med_{idx}")
                 qty = c2.text_input("Qty", key=f"qty_{idx}")
-                confirmed.append((med,qty))
+                confirmed.append((med, qty))
             if confirmed:
                 st.session_state.confirmed = confirmed
 
-# Tab 3: Quotes & ETA
+# — Step 3: Compare Quotes & ETA —
 with tabs[2]:
     ico, col = st.columns([4,6])
     if os.path.exists("assets/Price Comparison.svg"):
@@ -163,7 +179,7 @@ with tabs[2]:
     if "confirmed" not in st.session_state:
         col.info("📝 Please complete Step 2 first.")
     else:
-        for med,qty in st.session_state.confirmed:
+        for med, qty in st.session_state.confirmed:
             col.subheader(f"{med} × {qty or '–'}")
             mid = name_to_id.get(med)
             df  = vendor_df[vendor_df.medicine_id==mid].copy()
@@ -171,7 +187,7 @@ with tabs[2]:
                 col.warning("No quotes available.")
                 continue
             df["total"] = df.price * (int(qty) if qty.isdigit() else 1)
-            sort_col    = "total" if sort_by.startswith("Price") else "eta_minutes"
+            sort_col   = "total" if sort_by.startswith("Price") else "eta_minutes"
             df = df.sort_values(sort_col)
             best = df.iloc[0]
             if sort_by.startswith("Price"):
