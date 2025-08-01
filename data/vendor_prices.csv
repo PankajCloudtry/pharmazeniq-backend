@@ -1,0 +1,10 @@
+vendor_id,vendor_name,latitude,longitude,medicine_id,price,stock,eta_minutes
+1,PharmaOne,28.567,77.321,1,150.00,20,15
+1,PharmaOne,28.567,77.321,2,95.00,10,15
+2,HealthPlus,28.593,77.250,1,155.00,5,20
+2,HealthPlus,28.593,77.250,3,200.00,8,20
+3,QuickMeds,28.580,77.300,2,92.00,15,12
+4,CityPharma,28.610,77.200,2,98.50, 8,18
+5,MediExpress,28.550,77.280,2,94.25,20,10
+6,HealthNow,28.590,77.260,2,91.00,25,20
+7,ePharma,28.605,77.245,2,95.50,30,15
