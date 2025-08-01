@@ -1,4 +1,6 @@
 import streamlit as st
+from google.cloud import vision
+from google.oauth2 import service_account
 import os, io, re, base64
 import pandas as pd
 import numpy as np
@@ -6,7 +8,12 @@ import cv2
 from PIL import Image
 from rapidfuzz import process, fuzz
 from pdf2image import convert_from_bytes
-from google.cloud import vision
+
+# ─── BOOTSTRAP GOOGLE VISION CREDENTIALS FROM st.secrets ───────────────────
+vision_info = dict(st.secrets["vision"])
+credentials = service_account.Credentials.from_service_account_info(vision_info)
+client = vision.ImageAnnotatorClient(credentials=credentials)
+# ───────────────────────────────────────────────────────────────────────────
 
 # 1️⃣ Page config & header
 st.set_page_config("Pharmazeniq", "💊", layout="wide")
@@ -18,7 +25,6 @@ else:
 # 1b️⃣ Enormous tabs CSS
 st.markdown("""
     <style>
-      /* Enlarge tab labels drastically */
       [role="tablist"] [role="tab"] {
         font-size:64px !important;
         padding: 1rem 2rem !important;
@@ -26,7 +32,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 2️⃣ Sidebar: big animation.gif, sort, support
+# 2️⃣ Sidebar: animation, sort & support
 with st.sidebar:
     if os.path.exists("animation.gif"):
         gif_bytes = open("animation.gif", "rb").read()
@@ -43,11 +49,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("Need help? 📧 support@pharmazeniq.com")
 
-# 3️⃣ Google Vision client
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "gcp_key.json"
-client = vision.ImageAnnotatorClient()
-
-# 4️⃣ Load data
+# 3️⃣ Load data
 @st.cache_data
 def load_data():
     meds_df   = pd.read_csv("data/medicines.csv")
@@ -57,7 +59,7 @@ def load_data():
 meds_df, vendor_df = load_data()
 name_to_id = dict(zip(meds_df.name, meds_df.id))
 
-# 5️⃣ OCR helpers
+# 4️⃣ OCR helpers
 def deskew_and_encode(img: Image.Image) -> bytes:
     arr  = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
@@ -94,7 +96,7 @@ def extract_text(uploaded) -> str:
         texts.append( ocr_bytes(deskew_and_encode(pg)) )
     return "\n".join(texts)
 
-# 6️⃣ Normalize & fuzzy-match
+# 5️⃣ Normalize & fuzzy-match
 def normalize(line: str) -> str:
     x = re.sub(r"^[\s\-\•\d\.]+","", line)
     x = re.sub(r"\b\d+(\.\d+)?\s?(mg|g|ml)\b","", x, flags=re.IGNORECASE)
@@ -110,12 +112,12 @@ def fuzzy_opts(key: str) -> list[str]:
         opts = [n for n in names if key in normalize(n)]
     return opts
 
-# 7️⃣ Build 3-step UI
+# 6️⃣ Build 3-step UI
 tabs = st.tabs(["1. OCR", "2. Confirm", "3. Quotes"])
 
 # Tab 1: Upload Prescription
 with tabs[0]:
-    ico, col = st.columns([4,6])  # icon gets 40% width
+    ico, col = st.columns([4,6])
     if os.path.exists("assets/RX Upload.svg"):
         ico.image("assets/RX Upload.svg", width=600)
     col.header("1️⃣ Upload Prescription")
