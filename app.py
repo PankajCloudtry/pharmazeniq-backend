@@ -114,9 +114,9 @@ def extract_text(uploaded) -> str:
 
 # ─── 5️⃣ NORMALIZE & FUZZY MATCH ─────────────────────────────────────────────
 def normalize(line: str) -> str:
-    x = re.sub(r"^[\\s\\-\\•\\d\\.]+", "", line)
-    x = re.sub(r"\\b\\d+(\\.\\d+)?\\s?(mg|g|ml)\\b", "", x, flags=re.IGNORECASE)
-    x = re.sub(r"\\b(tab|tablet|cap|capsule|caps)\\b", "", x, flags=re.IGNORECASE)
+    x = re.sub(r"^[\s\-\•\d\.]+", "", line)
+    x = re.sub(r"\b\d+(\.\d+)?\s?(mg|g|ml)\b", "", x, flags=re.IGNORECASE)
+    x = re.sub(r"\b(tab|tablet|cap|capsule|caps)\b", "", x, flags=re.IGNORECASE)
     x = re.sub(r"[^A-Za-z0-9 ]+", "", x)
     return x.lower().strip()
 
@@ -157,7 +157,7 @@ with tabs[1]:
         TOKENS = ("tab", "tablet", "cap", "capsule", "mg", "ml", " g ")
         raw_lines = st.session_state.raw.split("\n")
         lines = [l for l in raw_lines if any(t in l.lower() for t in TOKENS)]
-        if not lines:                      # fallback: show everything non-blank
+        if not lines:
             lines = [l for l in raw_lines if l.strip()]
 
         confirmed = []
@@ -196,16 +196,17 @@ with tabs[2]:
             mid = name_to_id.get(med)
             df = vendor_df[vendor_df.medicine_id == mid].copy()
 
-            # only vendors with enough stock
-            df = df[df.stock >= qty_int]
-
             if df.empty:
-                col.warning("No vendor has the requested quantity in stock.")
+                col.warning("No vendor data.")
                 continue
 
+            df["unit_price"] = df.price                    # keep original price
+            df["status"] = np.where(df.stock >= qty_int, "✅ in-stock", "⚠️ limited")
             df["total"] = df.price * qty_int
-            sort_col = "total" if sort_by.startswith("Price") else "eta_minutes"
-            df = df.sort_values(sort_col)
+            df["instock_flag"] = (df.stock >= qty_int).astype(int)
+
+            metric = "total" if sort_by.startswith("Price") else "eta_minutes"
+            df = df.sort_values(["instock_flag", metric], ascending=[False, True])
 
             best = df.iloc[0]
             if sort_by.startswith("Price"):
@@ -214,7 +215,8 @@ with tabs[2]:
                 col.metric("Fastest ETA", f"{best.eta_minutes} min", f"₹{best.total:.2f}")
 
             out = (
-                df[["vendor_name", "price", "total", "stock", "eta_minutes"]]
-                .rename(columns={"price": "unit_price"})
+                df[["vendor_name", "unit_price", "total", "stock", "status", "eta_minutes"]]
+                .rename(columns={"unit_price": "price"})
+                .reset_index(drop=True)
             )
             col.dataframe(out, use_container_width=True)
