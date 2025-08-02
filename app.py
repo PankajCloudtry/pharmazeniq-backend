@@ -18,6 +18,12 @@ if raw is None:
     st.stop()
 
 info = json.loads(raw) if isinstance(raw, str) else dict(raw)
+
+# sanitize private_key: strip leading/trailing spaces on every line
+if "private_key" in info:
+    pk_lines = [ln.strip() for ln in info["private_key"].splitlines() if ln.strip()]
+    info["private_key"] = "\n".join(pk_lines) + "\n"
+
 creds = service_account.Credentials.from_service_account_info(info)
 client = vision_v1.ImageAnnotatorClient(credentials=creds)
 
@@ -197,3 +203,4 @@ with tabs[2]:
                 df[["vendor_name", "price", "stock", "eta_minutes", "total"]],
                 use_container_width=True,
             )
+            
