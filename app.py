@@ -36,8 +36,6 @@ html,body{height:100%;margin:0;font-family:'Inter',sans-serif}
 .card:hover{transform:translateY(-4px);box-shadow:0 6px 16px rgba(0,0,0,.12)}
 .card img{width:100%;border-radius:.6rem}
 .card-title{font-size:.95rem;font-weight:600;margin:.4rem 0 .2rem}
-.stock-badge{font-size:.75rem;color:#555;background:#f5f5f5;
-             padding:0 .4rem;border-radius:.4rem}
 
 .grid{display:grid;gap:1rem;padding:0 .5rem;overflow-x:hidden}
 @media(max-width:600px){.grid{grid-template-columns:repeat(2,1fr)}}
@@ -50,11 +48,10 @@ footer{visibility:hidden}
     unsafe_allow_html=True,
 )
 
-def make_card(img: str, vendor_html: str, note: str = "") -> str:
-    badge = f'<span class="stock-badge">{note}</span>' if note else ""
+def make_card(img: str, vendor_html: str) -> str:
     return (
         f'<div class="card"><img src="{img}" loading="lazy">'
-        f'<div class="card-title">{vendor_html}</div>{badge}</div>'
+        f'<div class="card-title">{vendor_html}</div></div>'
     )
 
 
@@ -178,7 +175,7 @@ with tabs[1]:
         if confirmed: st.session_state.confirmed=confirmed
 
 
-# Quotes  – vendor-level comparison with shortfall info
+# Quotes – vendor-level comparison with per-medicine table
 with tabs[2]:
     st.header("3️⃣ Compare Prices & ETA")
 
@@ -186,50 +183,53 @@ with tabs[2]:
         st.info("Confirm medicines first.")
         st.stop()
 
-    # Build order list
+    # build order
     order=[]
     for med_name, qty in st.session_state.confirmed:
         try: qty=max(1,int(qty))
         except: qty=1
-        order.append({"mid": name_to_id.get(med_name), "qty": qty, "name": med_name})
+        order.append({"mid":name_to_id.get(med_name),"name":med_name,"qty":qty})
 
     wanted_ids={o["mid"] for o in order}
     df=vendor_df[vendor_df.medicine_id.isin(wanted_ids)].copy()
     qty_map={o["mid"]:o["qty"] for o in order}
     df["ordered_qty"]=df.medicine_id.map(qty_map)
     df["filled_qty"]=df[["stock","ordered_qty"]].min(axis=1)
-    df["total_line"]=df.price*df.filled_qty
-    df["shortfall"]=df.ordered_qty-df.filled_qty
+    df["line_total"]=df.price*df.filled_qty
+    df["short"]=df.ordered_qty-df.filled_qty
 
-    vendor_roll=(df.groupby("vendor_name")
-                   .agg(total_price=("total_line","sum"),
-                        eta=("eta_minutes","max"),
-                        missing_items=("shortfall",lambda x:(x>0).sum()))
-                   .reset_index())
-    vendor_roll=vendor_roll[vendor_roll.total_price>0]
-    if vendor_roll.empty:
-        st.warning("No vendor has stock for any item.")
+    roll=(df.groupby("vendor_name")
+            .agg(total_price=("line_total","sum"),
+                 eta=("eta_minutes","max"),
+                 missing_items=("short",lambda x:(x>0).sum()))
+            .reset_index())
+    roll=roll[roll.total_price>0]
+    if roll.empty:
+        st.warning("No vendor can supply any part of this order.")
         st.stop()
 
     sort_key="total_price" if sort_by.startswith("Price") else "eta"
-    vendor_roll=vendor_roll.sort_values(["missing_items",sort_key]).reset_index(drop=True)
+    roll=roll.sort_values(["missing_items",sort_key]).reset_index(drop=True)
 
-    st.metric("Average price",f"₹{vendor_roll.total_price.mean():.0f}")
-    st.metric("Average ETA",f"{vendor_roll.eta.mean():.0f} min")
+    col1,col2=st.columns(2)
+    col1.metric("Average price",f"₹{roll.total_price.mean():.0f}")
+    col2.metric("Average ETA",f"{roll.eta.mean():.0f} min")
 
+    # vendor grid
     cards=""
-    for _,v in vendor_roll.iterrows():
-        subtitle=(f"{v.eta} min<br>₹{v.total_price:.0f}"
-                  if sort_key=="eta"
-                  else f"₹{v.total_price:.0f}<br>{v.eta} min")
-        # build shortfall note
-        rows=df[df.vendor_name==v.vendor_name]
-        notes=[f"{r.filled_qty}/{r.ordered_qty} {id_to_name[r.medicine_id]}"
-               for _,r in rows.iterrows() if r.shortfall>0]
-        note_text=", ".join(notes)
-        cards+=make_card(
-            img="https://dummyimage.com/300x200/ffffff/000000&text=%20",
-            vendor_html=f"{v.vendor_name}<br><small>{subtitle}</small>",
-            note=note_text
-        )
+    for _,v in roll.iterrows():
+        price=f"₹{v.total_price:.0f}"; eta=f"{v.eta} min"
+        subtitle=f"{price}<br>{eta}" if sort_key=="total_price" else f"{eta}<br>{price}"
+        cards+=make_card("https://dummyimage.com/300x200/ffffff/000000&text=%20",
+                         f"{v.vendor_name}<br><small>{subtitle}</small>")
     st.markdown(f'<div class="grid">{cards}</div>',unsafe_allow_html=True)
+
+    # detailed tables
+    st.write("---")
+    st.subheader("Vendor breakdown")
+    for _,v in roll.iterrows():
+        header=f"**{v.vendor_name}** — ₹{v.total_price:.0f} • {v.eta} min"
+        if v.missing_items:
+            header+=f" _(short {v.missing_items} item{'s' if v.missing_items>1 else ''})_"
+        with st.expander(header):
+            vdf=df[df.vendor
