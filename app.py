@@ -181,25 +181,40 @@ with tabs[2]:
     if os.path.exists("assets/Price Comparison.svg"):
         ico.image("assets/Price Comparison.svg", width=500, clamp=True)
     col.header("3️⃣ Compare Prices & ETA")
+
     if "confirmed" not in st.session_state:
         col.info("📝 Complete Step 2 first.")
     else:
         for med, qty in st.session_state.confirmed:
-            col.subheader(f"{med} × {qty or '–'}")
+
+            try:
+                qty_int = int(qty)
+            except Exception:
+                qty_int = 1
+
+            col.subheader(f"{med} × {qty_int}")
             mid = name_to_id.get(med)
             df = vendor_df[vendor_df.medicine_id == mid].copy()
+
+            # only vendors with enough stock
+            df = df[df.stock >= qty_int]
+
             if df.empty:
-                col.warning("No quotes available.")
+                col.warning("No vendor has the requested quantity in stock.")
                 continue
-            df["total"] = df.price * (int(qty) if qty.isdigit() else 1)
+
+            df["total"] = df.price * qty_int
             sort_col = "total" if sort_by.startswith("Price") else "eta_minutes"
             df = df.sort_values(sort_col)
+
             best = df.iloc[0]
             if sort_by.startswith("Price"):
                 col.metric("Best Price", f"₹{best.total:.2f}", f"{best.eta_minutes} min ETA")
             else:
-                col.metric("Fastest ETA", f"{best.eta_minutes} min", f"{best.total:.2f}")
-            col.dataframe(
-                df[["vendor_name", "price", "stock", "eta_minutes", "total"]],
-                use_container_width=True,
+                col.metric("Fastest ETA", f"{best.eta_minutes} min", f"₹{best.total:.2f}")
+
+            out = (
+                df[["vendor_name", "price", "total", "stock", "eta_minutes"]]
+                .rename(columns={"price": "unit_price"})
             )
+            col.dataframe(out, use_container_width=True)
