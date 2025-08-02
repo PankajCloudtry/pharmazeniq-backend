@@ -1,3 +1,4 @@
+# app.py
 import os, io, re, base64
 from typing import Tuple
 
@@ -19,7 +20,7 @@ if os.path.exists("assets/header_banner.png"):
 else:
     st.warning("⚠️ header_banner.png not found in assets/")
 
-# ─── 1b️⃣ ENLARGED TABS CSS ───────────────────────────────────────────────────
+# ─── 1b️⃣ ENLARGED TABS CSS ──────────────────────────────────────────────────
 st.markdown(
     """
     <style>
@@ -32,13 +33,13 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ─── 2️⃣ SIDEBAR ──────────────────────────────────────────────────────────────
+# ─── 2️⃣ SIDEBAR ─────────────────────────────────────────────────────────────
 with st.sidebar:
     if os.path.exists("animation.gif"):
         b64 = base64.b64encode(open("animation.gif", "rb").read()).decode()
         st.markdown(
-            f'<img src="data:image/gif;base64,{b64}"'
-            ' style="width:100%;margin-bottom:1rem;"',
+            f'<img src="data:image/gif;base64,{b64}" '
+            'style="width:100%;margin-bottom:1rem;">',
             unsafe_allow_html=True,
         )
     else:
@@ -49,13 +50,13 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("Need help? 📧 support@pharmazeniq.com")
 
-# ─── 3️⃣ GOOGLE VISION CLIENT ─────────────────────────────────────────────────
-# Load credentials directly from Streamlit secrets
+# ─── 3️⃣ GOOGLE VISION CLIENT ────────────────────────────────────────────────
+# Credentials are provided via Manage app → Settings → Secrets (TOML table)
 creds_info = st.secrets["GOOGLE_CREDENTIALS"]
 creds = service_account.Credentials.from_service_account_info(creds_info)
 client = vision_v1.ImageAnnotatorClient(credentials=creds)
 
-# ─── 4️⃣ LOAD DATA ────────────────────────────────────────────────────────────
+# ─── 4️⃣ LOAD DATA ───────────────────────────────────────────────────────────
 @st.cache_data
 def load_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     meds = pd.read_csv("data/medicines.csv")
@@ -76,17 +77,19 @@ def deskew_and_encode(img: Image.Image) -> bytes:
     if angle < -45:
         angle += 90
     h, w = th.shape
-    M = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
+    M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
     deskew = cv2.warpAffine(
         th, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
     )
     _, buf = cv2.imencode(".jpg", deskew)
     return buf.tobytes()
 
+
 def ocr_bytes(b: bytes) -> str:
     img = vision_v1.Image(content=b)
     resp = client.document_text_detection(image=img)
     return resp.full_text_annotation.text or ""
+
 
 def extract_text(uploaded) -> str:
     raw = uploaded.read()
@@ -101,13 +104,14 @@ def extract_text(uploaded) -> str:
     texts = [ocr_bytes(deskew_and_encode(pg)) for pg in pages]
     return "\n".join(texts)
 
-# ─── 6️⃣ NORMALIZE & FUZZY MATCH ───────────────────────────────────────────────
+# ─── 6️⃣ NORMALIZE & FUZZY MATCH ─────────────────────────────────────────────
 def normalize(line: str) -> str:
     x = re.sub(r"^[\s\-\•\d\.]+", "", line)
     x = re.sub(r"\b\d+(\.\d+)?\s?(mg|g|ml)\b", "", x, flags=re.IGNORECASE)
     x = re.sub(r"\b(tab|tabs|cap|caps)\b", "", x, flags=re.IGNORECASE)
     x = re.sub(r"[^A-Za-z0-9 ]+", "", x)
     return x.lower().strip()
+
 
 def fuzzy_opts(key: str) -> list[str]:
     names = meds_df.name.tolist()
@@ -144,8 +148,9 @@ with tabs[1]:
         col.info("🔎 Complete Step 1 first.")
     else:
         lines = [
-            l for l in st.session_state.raw.split("\n")
-            if any(tok in l.lower() for tok in ("tab","mg","cap"))
+            l
+            for l in st.session_state.raw.split("\n")
+            if any(tok in l.lower() for tok in ("tab", "mg", "cap"))
         ]
         confirmed = []
         if not lines:
@@ -183,10 +188,18 @@ with tabs[2]:
             df = df.sort_values(sort_col)
             best = df.iloc[0]
             if sort_by.startswith("Price"):
-                col.metric("Best Price", f"₹{best.total:.2f}", f"{best.eta_minutes} min ETA")
+                col.metric(
+                    "Best Price",
+                    f"₹{best.total:.2f}",
+                    f"{best.eta_minutes} min ETA",
+                )
             else:
-                col.metric("Fastest ETA", f"{best.eta_minutes} min", f"₹{best.total:.2f}")
+                col.metric(
+                    "Fastest ETA",
+                    f"{best.eta_minutes} min",
+                    f"₹{best.total:.2f}",
+                )
             col.dataframe(
-                df[["vendor_name", "price","stock","eta_minutes","total"]],
-                use_container_width=True
+                df[["vendor_name", "price", "stock", "eta_minutes", "total"]],
+                use_container_width=True,
             )
