@@ -8,6 +8,7 @@ import cv2
 from PIL import Image
 from rapidfuzz import process, fuzz
 from pdf2image import convert_from_bytes, exceptions as pdf2image_exc
+import fitz  # PyMuPDF
 from google.oauth2 import service_account
 from google.cloud import vision_v1
 
@@ -85,23 +86,22 @@ def ocr_bytes(b: bytes) -> str:
     resp = client.document_text_detection(image=img)
     return resp.full_text_annotation.text or ""
 
+def pdf_to_images(data: bytes, dpi: int = 300) -> List[Image.Image]:
+    doc = fitz.open(stream=data, filetype="pdf")
+    return [Image.open(io.BytesIO(page.get_pixmap(dpi=dpi).tobytes())) for page in doc]
+
 def extract_text(uploaded) -> str:
     raw = uploaded.read()
     pages: List[Image.Image] = []
 
-    # if PDF, attempt conversion
     if uploaded.type == "application/pdf":
         try:
             pages = convert_from_bytes(raw, dpi=300)
         except (pdf2image_exc.PDFInfoNotInstalledError,
                 pdf2image_exc.PopplerNotInstalledError,
                 Exception):
-            st.warning(
-                "⚠️ PDF conversion not available on the server. "
-                "Please upload a JPG/PNG scan instead."
-            )
+            pages = pdf_to_images(raw)
 
-    # if not PDF or conversion failed, treat as single image
     if not pages:
         try:
             pages = [Image.open(io.BytesIO(raw))]
@@ -189,6 +189,8 @@ with tabs[2]:
             if sort_by.startswith("Price"):
                 col.metric("Best Price", f"₹{best.total:.2f}", f"{best.eta_minutes} min ETA")
             else:
-                col.metric("Fastest ETA", f"{best.eta_minutes} min", f"₹{best.total:.2f}")
-            col.dataframe(df[["vendor_name", "price", "stock", "eta_minutes", "total"]],
-                          use_container_width=True)
+                col.metric("Fastest ETA", f"{best.eta_minutes} min", f"{best.total:.2f}")
+            col.dataframe(
+                df[["vendor_name", "price", "stock", "eta_minutes", "total"]],
+                use_container_width=True,
+            )
