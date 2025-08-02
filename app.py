@@ -15,17 +15,15 @@ from google.cloud import vision_v1
 # ─── 0️⃣ CREDENTIALS ─────────────────────────────────────────────────────────
 raw = st.secrets.get("GOOGLE_CREDENTIALS") or st.secrets.get("service_account_json")
 if raw is None:
-    st.error("❌ Google Vision credentials missing in Secrets panel.")
+    st.error("❌ Google Vision credentials missing in Secrets.")
     st.stop()
-
 info = json.loads(raw) if isinstance(raw, str) else dict(raw)
 creds = service_account.Credentials.from_service_account_info(info)
 client = vision_v1.ImageAnnotatorClient(credentials=creds)
 
-# ─── 1️⃣ PAGE CONFIG ─────────────────────────────────────────────────────────
+# ─── 1️⃣ PAGE CONFIG & THEME ─────────────────────────────────────────────────
 st.set_page_config(page_title="Pharmazeniq", page_icon="💊", layout="wide")
 
-# ─── 1b️⃣ THEME & CARD CSS ---------------------------------------------------
 st.markdown(
     """
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -33,21 +31,20 @@ st.markdown(
     <style>
       html, body, div[class^="st"]  { font-family: 'Inter', sans-serif; }
       .block-container { padding: 0rem 1rem; }
-      .card {
-        border: 1px solid #eee; border-radius: 0.8rem; padding: 0.8rem;
-        box-shadow: 0 1px 4px rgba(0,0,0,0.06);
-        transition: all .15s ease-in-out;
-      }
-      .card:hover { transform: translateY(-4px); box-shadow: 0 6px 16px rgba(0,0,0,0.12);}
-      .card img { width: 100%; border-radius: 0.6rem; }
-      .card-title { font-size: 0.95rem; font-weight: 600; margin: 0.4rem 0 0.2rem;}
-      .card-price { font-size: 0.9rem; color:#e91e63; font-weight: 600;}
-      .stock-badge { font-size:0.75rem; color:#555; background:#f5f5f5;
-                     padding:0 0.4rem; border-radius:0.4rem; }
-      @media (max-width:600px){ .grid{grid-template-columns:repeat(2,1fr);} }
-      @media (min-width:601px) and (max-width:992px){ .grid{grid-template-columns:repeat(3,1fr);} }
-      @media (min-width:993px){ .grid{grid-template-columns:repeat(4,1fr);} }
-      .grid{display:grid; gap:1rem;}
+
+      .card{border:1px solid #eee;border-radius:.8rem;padding:.8rem;
+            box-shadow:0 1px 4px rgba(0,0,0,.06);transition:.15s}
+      .card:hover{transform:translateY(-4px);box-shadow:0 6px 16px rgba(0,0,0,.12)}
+      .card img{width:100%;border-radius:.6rem}
+      .card-title{font-size:.95rem;font-weight:600;margin:.4rem 0 .2rem}
+      .card-price{font-size:.9rem;color:#e91e63;font-weight:600}
+      .stock-badge{font-size:.75rem;color:#555;background:#f5f5f5;
+                   padding:0 .4rem;border-radius:.4rem}
+
+      .grid{display:grid;gap:1rem;padding:0 .5rem;overflow-x:hidden;}
+      @media(max-width:600px){.grid{grid-template-columns:repeat(2,1fr)}}
+      @media(min-width:601px) and (max-width:992px){.grid{grid-template-columns:repeat(3,1fr)}}
+      @media(min-width:993px){.grid{grid-template-columns:repeat(3,1fr)}}
     </style>
     """,
     unsafe_allow_html=True,
@@ -57,14 +54,13 @@ def product_card(img_url: str, name: str, total: float, stock_note: str) -> str:
     badge = f'<span class="stock-badge">{stock_note}</span>' if stock_note else ""
     return f"""
     <div class="card">
-        <img src="{img_url}" loading="lazy">
-        <div class="card-title">{name}</div>
-        <div class="card-price">₹{total:.2f}</div>
-        {badge}
+      <img src="{img_url}" loading="lazy">
+      <div class="card-title">{name}</div>
+      <div class="card-price">₹{total:.2f}</div>
+      {badge}
     </div>
     """
 
-# ─── HEADER ──────────────────────────────────────────────────────────────────
 if os.path.exists("assets/header_banner.png"):
     st.image("assets/header_banner.png", use_container_width=True)
 
@@ -81,17 +77,15 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("Need help? 📧 support@pharmazeniq.com")
 
-# ─── 3️⃣ LOAD DATA ───────────────────────────────────────────────────────────
+# ─── 3️⃣ DATA ────────────────────────────────────────────────────────────────
 @st.cache_data
 def load_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
-    meds = pd.read_csv("data/medicines.csv")
-    vendors = pd.read_csv("data/vendor_prices.csv")
-    return meds, vendors
+    return pd.read_csv("data/medicines.csv"), pd.read_csv("data/vendor_prices.csv")
 
 meds_df, vendor_df = load_data()
 name_to_id = dict(zip(meds_df.name, meds_df.id))
 
-# ─── 4️⃣ OCR HELPERS ─────────────────────────────────────────────────────────
+# ─── 4️⃣ OCR ─────────────────────────────────────────────────────────────────
 def deskew_and_encode(img: Image.Image) -> bytes:
     arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
@@ -107,13 +101,10 @@ def deskew_and_encode(img: Image.Image) -> bytes:
     return buf.tobytes()
 
 def ocr_bytes(b: bytes) -> str:
-    img = vision_v1.Image(content=b)
-    resp = client.document_text_detection(image=img)
-    return resp.full_text_annotation.text or ""
+    return client.document_text_detection(image=vision_v1.Image(content=b)).full_text_annotation.text
 
-def pdf_to_images(data: bytes, dpi: int = 300) -> List[Image.Image]:
-    doc = fitz.open(stream=data, filetype="pdf")
-    return [Image.open(io.BytesIO(p.get_pixmap(dpi=dpi).tobytes())) for p in doc]
+def pdf_to_images(data: bytes, dpi=300) -> List[Image.Image]:
+    return [Image.open(io.BytesIO(p.get_pixmap(dpi=dpi).tobytes())) for p in fitz.open(stream=data, filetype="pdf")]
 
 def extract_text(uploaded) -> str:
     raw = uploaded.read()
@@ -124,30 +115,28 @@ def extract_text(uploaded) -> str:
         except Exception:
             pages = pdf_to_images(raw)
     if not pages:
-        try:
-            pages = [Image.open(io.BytesIO(raw))]
+        try: pages = [Image.open(io.BytesIO(raw))]
         except Exception:
             st.error("❌ Not a valid image/PDF.")
             return ""
     return "\n".join(ocr_bytes(deskew_and_encode(p)) for p in pages)
 
-# ─── 5️⃣ FUZZY MATCH ─────────────────────────────────────────────────────────
+# ─── 5️⃣ MATCHING ────────────────────────────────────────────────────────────
 def normalize(line: str) -> str:
     x = re.sub(r"^[\s\-\•\d\.]+", "", line)
     x = re.sub(r"\b\d+(\.\d+)?\s?(mg|g|ml)\b", "", x, flags=re.IGNORECASE)
-    x = re.sub(r"\b(tab|tablet|cap|capsule|caps)\b", "", x, flags=re.IGNORECASE)
+    x = re.sub(r"\b(tab|tablet|cap|capsule|caps|syp|syr|syrup|inj)\b", "", x, flags=re.IGNORECASE)
     x = re.sub(r"[^A-Za-z0-9 ]+", "", x)
     return x.lower().strip()
 
 def fuzzy_opts(key: str) -> list[str]:
-    names = meds_df.name.tolist()
-    matches = process.extract(key, names, limit=5, scorer=fuzz.token_set_ratio)
-    return [n for n, score, _ in matches if score >= 70]
+    matches = process.extract(key, meds_df.name.tolist(), limit=5, scorer=fuzz.token_set_ratio)
+    return [n for n, score, _ in matches if score >= 60]
 
-# ─── 6️⃣ UI TABS ─────────────────────────────────────────────────────────────
+# ─── 6️⃣ UI ──────────────────────────────────────────────────────────────────
 tabs = st.tabs(["1. Upload Rx", "2. Confirm", "3. Quotes"])
 
-# Upload tab
+# Upload
 with tabs[0]:
     ico, col = st.columns([4, 6])
     if os.path.exists("assets/RX Upload.svg"): ico.image("assets/RX Upload.svg", width=500, clamp=True)
@@ -160,7 +149,7 @@ with tabs[0]:
     if "raw" in st.session_state:
         st.text_area("Extracted Text", st.session_state.raw, height=200)
 
-# Confirm tab
+# Confirm
 with tabs[1]:
     ico, col = st.columns([4, 6])
     if os.path.exists("assets/Confirm Medicine.svg"):
@@ -170,9 +159,10 @@ with tabs[1]:
     if "raw" not in st.session_state:
         col.info("🔎 Complete Step 1 first.")
     else:
-        TOKENS = ("tab", "tablet", "cap", "capsule", "mg", "ml", " g ")
+        TOKENS = ("tab", "tablet", "cap", "capsule", "syp", "syr", "syrup", "inj", "mg", "ml")
         lines = [l for l in st.session_state.raw.split("\n") if any(t in l.lower() for t in TOKENS)]
-        if not lines: lines = [l for l in st.session_state.raw.split("\n") if l.strip()]
+        if not lines:
+            lines = [l for l in st.session_state.raw.split("\n") if l.strip()]
 
         confirmed = []
         for i, line in enumerate(lines, 1):
@@ -184,10 +174,16 @@ with tabs[1]:
             med = c1.selectbox(f"{i}. {line}", opts, key=f"med_{i}")
             qty = c2.text_input("Qty", key=f"qty_{i}")
             confirmed.append((med, qty))
-        if confirmed: st.session_state.confirmed = confirmed
-        elif not confirmed: col.info("⚠ No medicine lines detected.")
 
-# Quotes tab
+        # optional manual entry
+        if not confirmed:
+            new_med = col.text_input("Manual medicine name")
+            new_qty = col.text_input("Qty", key="manual_qty")
+            if new_med: confirmed.append((new_med, new_qty))
+
+        if confirmed: st.session_state.confirmed = confirmed
+
+# Quotes
 with tabs[2]:
     ico, col = st.columns([4, 6])
     if os.path.exists("assets/Price Comparison.svg"):
@@ -224,14 +220,13 @@ with tabs[2]:
             else:
                 col.metric("Fastest ETA", f"{best.eta_minutes} min", f"₹{best.total:.2f}")
 
-            # Card grid
-            cards = []
-            for _, r in df.iterrows():
-                # placeholder image fallback
-                img_url = (
-                    r.get("image_url")
-                    if "image_url" in r and pd.notna(r["image_url"])
-                    else f"https://dummyimage.com/300x200/ffffff/000000&text={r['vendor_name'].split()[0]}"
+            cards_html = "".join(
+                product_card(
+                    img_url=r.get("image_url") or f"https://dummyimage.com/300x200/ffffff/000000&text={r.vendor_name.split()[0]}",
+                    name=r.vendor_name,
+                    total=r.total,
+                    stock_note=r.stock_note,
                 )
-                cards.append(product_card(img_url, r["vendor_name"], r["total"], r["stock_note"]))
-            col.markdown('<div class="grid">' + "".join(cards) + "</div>", unsafe_allow_html=True)
+                for _, r in df.iterrows()
+            )
+            col.markdown(f'<div class="grid">{cards_html}</div>', unsafe_allow_html=True)
