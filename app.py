@@ -1,5 +1,5 @@
 # app.py
-import os, io, re, base64
+import os, io, re, base64, json
 from typing import Tuple
 
 import streamlit as st
@@ -12,6 +12,15 @@ from pdf2image import convert_from_bytes
 from google.oauth2 import service_account
 from google.cloud import vision_v1
 
+# ─── 0️⃣ CREDENTIALS (works with either secret name) ─────────────────────────
+raw = st.secrets.get("GOOGLE_CREDENTIALS") or st.secrets.get("service_account_json")
+if raw is None:
+    st.error("❌ Google Vision credentials missing in Secrets panel.")
+    st.stop()
+info = raw if isinstance(raw, dict) else json.loads(raw)          # dict or raw-JSON
+creds = service_account.Credentials.from_service_account_info(info)
+client = vision_v1.ImageAnnotatorClient(credentials=creds)
+
 # ─── 1️⃣ PAGE CONFIG & HEADER ────────────────────────────────────────────────
 st.set_page_config(page_title="Pharmazeniq", page_icon="💊", layout="wide")
 
@@ -20,7 +29,6 @@ if os.path.exists("assets/header_banner.png"):
 else:
     st.warning("⚠️ header_banner.png not found in assets/")
 
-# ─── 1b️⃣ ENLARGED TABS CSS ──────────────────────────────────────────────────
 st.markdown(
     """
     <style>
@@ -50,13 +58,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("Need help? 📧 support@pharmazeniq.com")
 
-# ─── 3️⃣ GOOGLE VISION CLIENT ────────────────────────────────────────────────
-# Credentials are provided via Manage app → Settings → Secrets (TOML table)
-creds_info = st.secrets["GOOGLE_CREDENTIALS"]
-creds = service_account.Credentials.from_service_account_info(creds_info)
-client = vision_v1.ImageAnnotatorClient(credentials=creds)
-
-# ─── 4️⃣ LOAD DATA ───────────────────────────────────────────────────────────
+# ─── 3️⃣ LOAD DATA ───────────────────────────────────────────────────────────
 @st.cache_data
 def load_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     meds = pd.read_csv("data/medicines.csv")
@@ -66,7 +68,7 @@ def load_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
 meds_df, vendor_df = load_data()
 name_to_id = dict(zip(meds_df.name, meds_df.id))
 
-# ─── 5️⃣ OCR HELPERS ─────────────────────────────────────────────────────────
+# ─── 4️⃣ OCR HELPERS ─────────────────────────────────────────────────────────
 def deskew_and_encode(img: Image.Image) -> bytes:
     arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
@@ -104,7 +106,7 @@ def extract_text(uploaded) -> str:
     texts = [ocr_bytes(deskew_and_encode(pg)) for pg in pages]
     return "\n".join(texts)
 
-# ─── 6️⃣ NORMALIZE & FUZZY MATCH ─────────────────────────────────────────────
+# ─── 5️⃣ NORMALIZE & FUZZY MATCH ─────────────────────────────────────────────
 def normalize(line: str) -> str:
     x = re.sub(r"^[\s\-\•\d\.]+", "", line)
     x = re.sub(r"\b\d+(\.\d+)?\s?(mg|g|ml)\b", "", x, flags=re.IGNORECASE)
@@ -121,7 +123,7 @@ def fuzzy_opts(key: str) -> list[str]:
         opts = [n for n in names if key in normalize(n)]
     return opts
 
-# ─── 7️⃣ THREE-STEP UI ───────────────────────────────────────────────────────
+# ─── 6️⃣ THREE-STEP UI ───────────────────────────────────────────────────────
 tabs = st.tabs(["1. Upload Rx", "2. Confirm", "3. Quotes"])
 
 # Step 1: OCR
@@ -188,17 +190,9 @@ with tabs[2]:
             df = df.sort_values(sort_col)
             best = df.iloc[0]
             if sort_by.startswith("Price"):
-                col.metric(
-                    "Best Price",
-                    f"₹{best.total:.2f}",
-                    f"{best.eta_minutes} min ETA",
-                )
+                col.metric("Best Price", f"₹{best.total:.2f}", f"{best.eta_minutes} min ETA")
             else:
-                col.metric(
-                    "Fastest ETA",
-                    f"{best.eta_minutes} min",
-                    f"₹{best.total:.2f}",
-                )
+                col.metric("Fastest ETA", f"{best.eta_minutes} min", f"₹{best.total:.2f}")
             col.dataframe(
                 df[["vendor_name", "price", "stock", "eta_minutes", "total"]],
                 use_container_width=True,
