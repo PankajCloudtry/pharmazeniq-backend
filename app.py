@@ -1,4 +1,3 @@
-# app.py
 import os, io, re, base64, json
 from typing import Tuple
 
@@ -12,12 +11,13 @@ from pdf2image import convert_from_bytes
 from google.oauth2 import service_account
 from google.cloud import vision_v1
 
-# ─── 0️⃣ CREDENTIALS (works with either secret name) ─────────────────────────
+# ─── 0️⃣ CREDENTIALS ─────────────────────────────────────────────────────────
 raw = st.secrets.get("GOOGLE_CREDENTIALS") or st.secrets.get("service_account_json")
 if raw is None:
     st.error("❌ Google Vision credentials missing in Secrets panel.")
     st.stop()
-info = raw if isinstance(raw, dict) else json.loads(raw)          # dict or raw-JSON
+
+info = json.loads(raw) if isinstance(raw, str) else dict(raw)
 creds = service_account.Credentials.from_service_account_info(info)
 client = vision_v1.ImageAnnotatorClient(credentials=creds)
 
