@@ -82,6 +82,7 @@ def load_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
 
 meds_df, vendor_df = load_data()
 name_to_id = dict(zip(meds_df.name, meds_df.id))
+id_to_name = dict(zip(meds_df.id, meds_df.name))
 
 
 # ────────────────── 4. OCR ─────────────────────────────────────────────────
@@ -177,7 +178,7 @@ with tabs[1]:
         if confirmed: st.session_state.confirmed=confirmed
 
 
-# Quotes  – vendor-level comparison
+# Quotes  – vendor-level comparison with shortfall info
 with tabs[2]:
     st.header("3️⃣ Compare Prices & ETA")
 
@@ -195,35 +196,40 @@ with tabs[2]:
     wanted_ids={o["mid"] for o in order}
     df=vendor_df[vendor_df.medicine_id.isin(wanted_ids)].copy()
     qty_map={o["mid"]:o["qty"] for o in order}
-    df["qty"]=df.medicine_id.map(qty_map)
-    df=df[df.stock>=df.qty]                 # enough stock
-    df["total"]=df.price*df.qty
+    df["ordered_qty"]=df.medicine_id.map(qty_map)
+    df["filled_qty"]=df[["stock","ordered_qty"]].min(axis=1)
+    df["total_line"]=df.price*df.filled_qty
+    df["shortfall"]=df.ordered_qty-df.filled_qty
 
-    complete=(df.groupby("vendor_name")
-                .agg(n_meds=("medicine_id","nunique"),
-                     sum_price=("total","sum"),
-                     eta=("eta_minutes","max"))
-                .reset_index())
-    complete=complete[complete.n_meds==len(order)]
-    if complete.empty:
-        st.warning("No single vendor can fulfil the whole order.")
+    vendor_roll=(df.groupby("vendor_name")
+                   .agg(total_price=("total_line","sum"),
+                        eta=("eta_minutes","max"),
+                        missing_items=("shortfall",lambda x:(x>0).sum()))
+                   .reset_index())
+    vendor_roll=vendor_roll[vendor_roll.total_price>0]
+    if vendor_roll.empty:
+        st.warning("No vendor has stock for any item.")
         st.stop()
 
-    key="sum_price" if sort_by.startswith("Price") else "eta"
-    complete=complete.sort_values(key).reset_index(drop=True)
+    sort_key="total_price" if sort_by.startswith("Price") else "eta"
+    vendor_roll=vendor_roll.sort_values(["missing_items",sort_key]).reset_index(drop=True)
 
-    avg_price=complete.sum_price.mean(); avg_eta=complete.eta.mean()
-    col1,col2=st.columns(2)
-    col1.metric("Average price",f"₹{avg_price:.0f}")
-    col2.metric("Average ETA",f"{avg_eta:.0f} min")
+    st.metric("Average price",f"₹{vendor_roll.total_price.mean():.0f}")
+    st.metric("Average ETA",f"{vendor_roll.eta.mean():.0f} min")
 
     cards=""
-    for _,r in complete.iterrows():
-        subtitle=(f"{r.eta} min<br>₹{r.sum_price:.0f}"
-                  if key=="eta"
-                  else f"₹{r.sum_price:.0f}<br>{r.eta} min")
+    for _,v in vendor_roll.iterrows():
+        subtitle=(f"{v.eta} min<br>₹{v.total_price:.0f}"
+                  if sort_key=="eta"
+                  else f"₹{v.total_price:.0f}<br>{v.eta} min")
+        # build shortfall note
+        rows=df[df.vendor_name==v.vendor_name]
+        notes=[f"{r.filled_qty}/{r.ordered_qty} {id_to_name[r.medicine_id]}"
+               for _,r in rows.iterrows() if r.shortfall>0]
+        note_text=", ".join(notes)
         cards+=make_card(
             img="https://dummyimage.com/300x200/ffffff/000000&text=%20",
-            vendor_html=f"{r.vendor_name}<br><small>{subtitle}</small>",
+            vendor_html=f"{v.vendor_name}<br><small>{subtitle}</small>",
+            note=note_text
         )
     st.markdown(f'<div class="grid">{cards}</div>',unsafe_allow_html=True)
