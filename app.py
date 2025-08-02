@@ -166,7 +166,7 @@ with tabs[1]:
         else:
             for i, line in enumerate(lines, 1):
                 key = normalize(line)
-                if len(key) < 4:       # skip tiny noise tokens
+                if len(key) < 4:
                     continue
                 opts = fuzzy_opts(key)
                 if not opts:
@@ -191,7 +191,7 @@ with tabs[2]:
         for med, qty in st.session_state.confirmed:
 
             try:
-                qty_int = int(qty)
+                qty_int = max(1, int(qty))
             except Exception:
                 qty_int = 1
 
@@ -203,9 +203,13 @@ with tabs[2]:
                 col.warning("No vendor data.")
                 continue
 
-            df["unit_price"] = df.price
-            df["status"] = np.where(df.stock >= qty_int, "✅ in-stock", "⚠️ limited")
-            df["total"] = df.price * qty_int
+            df["price_per_tab"] = df.price
+            df["total"] = df.price_per_tab * qty_int
+            df["stock_note"] = np.where(
+                df.stock >= qty_int,
+                "",
+                "only " + df.stock.astype(str) + " left"
+            )
             df["instock_flag"] = (df.stock >= qty_int).astype(int)
 
             metric = "total" if sort_by.startswith("Price") else "eta_minutes"
@@ -213,13 +217,26 @@ with tabs[2]:
 
             best = df.iloc[0]
             if sort_by.startswith("Price"):
-                col.metric("Best Price", f"₹{best.total:.2f}", f"{best.eta_minutes} min ETA")
+                col.metric(
+                    "Best Price",
+                    f"₹{best.total:.2f}",
+                    f"{best.eta_minutes} min ETA"
+                )
             else:
-                col.metric("Fastest ETA", f"{best.eta_minutes} min", f"₹{best.total:.2f}")
+                col.metric(
+                    "Fastest ETA",
+                    f"{best.eta_minutes} min",
+                    f"₹{best.total:.2f}"
+                )
 
             out = (
-                df[["vendor_name", "unit_price", "total", "stock", "status", "eta_minutes"]]
-                .rename(columns={"unit_price": "price"})
+                df[["vendor_name", "price_per_tab", "total", "stock_note", "eta_minutes"]]
+                .rename(columns={
+                    "vendor_name": "vendor",
+                    "price_per_tab": "price/tab",
+                    "stock_note": "stock",
+                    "eta_minutes": "ETA (min)"
+                })
                 .reset_index(drop=True)
             )
             col.dataframe(out, use_container_width=True)
