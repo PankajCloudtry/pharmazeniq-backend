@@ -116,7 +116,7 @@ def extract_text(uploaded) -> str:
 def normalize(line: str) -> str:
     x = re.sub(r"^[\\s\\-\\•\\d\\.]+", "", line)
     x = re.sub(r"\\b\\d+(\\.\\d+)?\\s?(mg|g|ml)\\b", "", x, flags=re.IGNORECASE)
-    x = re.sub(r"\\b(tab|tabs|cap|caps)\\b", "", x, flags=re.IGNORECASE)
+    x = re.sub(r"\\b(tab|tablet|cap|capsule|caps)\\b", "", x, flags=re.IGNORECASE)
     x = re.sub(r"[^A-Za-z0-9 ]+", "", x)
     return x.lower().strip()
 
@@ -130,6 +130,7 @@ def fuzzy_opts(key: str) -> list[str]:
 # ─── 6️⃣ UI ───────────────────────────────────────────────────────────────────
 tabs = st.tabs(["1. Upload Rx", "2. Confirm", "3. Quotes"])
 
+# 6-A Upload
 with tabs[0]:
     ico, col = st.columns([4, 6])
     if os.path.exists("assets/RX Upload.svg"):
@@ -143,30 +144,38 @@ with tabs[0]:
     if "raw" in st.session_state:
         st.text_area("Extracted Text", st.session_state.raw, height=200)
 
+# 6-B Confirm
 with tabs[1]:
     ico, col = st.columns([4, 6])
     if os.path.exists("assets/Confirm Medicine.svg"):
         ico.image("assets/Confirm Medicine.svg", width=500, clamp=True)
     col.header("2️⃣ Confirm Medicines")
+
     if "raw" not in st.session_state:
         col.info("🔎 Complete Step 1 first.")
     else:
-        lines = [
-            l for l in st.session_state.raw.split("\\n")
-            if any(t in l.lower() for t in ("tab", "mg", "cap"))
-        ]
-        confirmed = []
-        for i, line in enumerate(lines, 1):
-            opts = fuzzy_opts(normalize(line))
-            if not opts:
-                continue
-            c1, c2 = st.columns([3, 1])
-            med = c1.selectbox(f"{i}. {line}", opts, key=f"med_{i}")
-            qty = c2.text_input("Qty", key=f"qty_{i}")
-            confirmed.append((med, qty))
-        if confirmed:
-            st.session_state.confirmed = confirmed
+        TOKENS = ("tab", "tablet", "cap", "capsule", "mg", "ml", " g ")
+        raw_lines = st.session_state.raw.split("\n")
+        lines = [l for l in raw_lines if any(t in l.lower() for t in TOKENS)]
+        if not lines:                      # fallback: show everything non-blank
+            lines = [l for l in raw_lines if l.strip()]
 
+        confirmed = []
+        if not lines:
+            col.info("⚠ Unable to find medicine lines in OCR output.")
+        else:
+            for i, line in enumerate(lines, 1):
+                opts = fuzzy_opts(normalize(line))
+                if not opts:
+                    continue
+                c1, c2 = st.columns([3, 1])
+                med = c1.selectbox(f"{i}. {line}", opts, key=f"med_{i}")
+                qty = c2.text_input("Qty", key=f"qty_{i}")
+                confirmed.append((med, qty))
+            if confirmed:
+                st.session_state.confirmed = confirmed
+
+# 6-C Quotes
 with tabs[2]:
     ico, col = st.columns([4, 6])
     if os.path.exists("assets/Price Comparison.svg"):
