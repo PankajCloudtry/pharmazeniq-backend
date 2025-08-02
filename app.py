@@ -123,7 +123,7 @@ def normalize(line: str) -> str:
 def fuzzy_opts(key: str) -> list[str]:
     names = meds_df.name.tolist()
     matches = process.extract(key, names, limit=5, scorer=fuzz.token_set_ratio)
-    return [n for n, score, _ in matches if score >= 50] or [
+    return [n for n, score, _ in matches if score >= 70] or [
         n for n in names if key in normalize(n)
     ]
 
@@ -165,7 +165,10 @@ with tabs[1]:
             col.info("⚠ Unable to find medicine lines in OCR output.")
         else:
             for i, line in enumerate(lines, 1):
-                opts = fuzzy_opts(normalize(line))
+                key = normalize(line)
+                if len(key) < 4:       # skip tiny noise tokens
+                    continue
+                opts = fuzzy_opts(key)
                 if not opts:
                     continue
                 c1, c2 = st.columns([3, 1])
@@ -200,7 +203,7 @@ with tabs[2]:
                 col.warning("No vendor data.")
                 continue
 
-            df["unit_price"] = df.price                    # keep original price
+            df["unit_price"] = df.price
             df["status"] = np.where(df.stock >= qty_int, "✅ in-stock", "⚠️ limited")
             df["total"] = df.price * qty_int
             df["instock_flag"] = (df.stock >= qty_int).astype(int)
