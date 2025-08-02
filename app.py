@@ -22,23 +22,51 @@ info = json.loads(raw) if isinstance(raw, str) else dict(raw)
 creds = service_account.Credentials.from_service_account_info(info)
 client = vision_v1.ImageAnnotatorClient(credentials=creds)
 
-# ─── 1️⃣ PAGE CONFIG & HEADER ────────────────────────────────────────────────
+# ─── 1️⃣ PAGE CONFIG ─────────────────────────────────────────────────────────
 st.set_page_config(page_title="Pharmazeniq", page_icon="💊", layout="wide")
 
-if os.path.exists("assets/header_banner.png"):
-    st.image("assets/header_banner.png", use_container_width=True)
-
+# ─── 1b️⃣ THEME & CARD CSS ---------------------------------------------------
 st.markdown(
     """
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
     <style>
-      [role="tablist"] [role="tab"] {
-        font-size:64px !important;
-        padding:1rem 2rem !important;
+      html, body, div[class^="st"]  { font-family: 'Inter', sans-serif; }
+      .block-container { padding: 0rem 1rem; }
+      .card {
+        border: 1px solid #eee; border-radius: 0.8rem; padding: 0.8rem;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+        transition: all .15s ease-in-out;
       }
+      .card:hover { transform: translateY(-4px); box-shadow: 0 6px 16px rgba(0,0,0,0.12);}
+      .card img { width: 100%; border-radius: 0.6rem; }
+      .card-title { font-size: 0.95rem; font-weight: 600; margin: 0.4rem 0 0.2rem;}
+      .card-price { font-size: 0.9rem; color:#e91e63; font-weight: 600;}
+      .stock-badge { font-size:0.75rem; color:#555; background:#f5f5f5;
+                     padding:0 0.4rem; border-radius:0.4rem; }
+      @media (max-width:600px){ .grid{grid-template-columns:repeat(2,1fr);} }
+      @media (min-width:601px) and (max-width:992px){ .grid{grid-template-columns:repeat(3,1fr);} }
+      @media (min-width:993px){ .grid{grid-template-columns:repeat(4,1fr);} }
+      .grid{display:grid; gap:1rem;}
     </style>
     """,
     unsafe_allow_html=True,
 )
+
+def product_card(img_url: str, name: str, total: float, stock_note: str) -> str:
+    badge = f'<span class="stock-badge">{stock_note}</span>' if stock_note else ""
+    return f"""
+    <div class="card">
+        <img src="{img_url}" loading="lazy">
+        <div class="card-title">{name}</div>
+        <div class="card-price">₹{total:.2f}</div>
+        {badge}
+    </div>
+    """
+
+# ─── HEADER ──────────────────────────────────────────────────────────────────
+if os.path.exists("assets/header_banner.png"):
+    st.image("assets/header_banner.png", use_container_width=True)
 
 # ─── 2️⃣ SIDEBAR ─────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -71,13 +99,10 @@ def deskew_and_encode(img: Image.Image) -> bytes:
     _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     coords = np.column_stack(np.where(th > 0))
     angle = cv2.minAreaRect(coords)[-1]
-    if angle < -45:
-        angle += 90
+    if angle < -45: angle += 90
     h, w = th.shape
-    M = cv2.getRotationMatrix2D((w / 2, h / 2), angle, 1.0)
-    deskew = cv2.warpAffine(
-        th, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE
-    )
+    M = cv2.getRotationMatrix2D((w/2, h/2), angle, 1.0)
+    deskew = cv2.warpAffine(th, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
     _, buf = cv2.imencode(".jpg", deskew)
     return buf.tobytes()
 
@@ -88,31 +113,25 @@ def ocr_bytes(b: bytes) -> str:
 
 def pdf_to_images(data: bytes, dpi: int = 300) -> List[Image.Image]:
     doc = fitz.open(stream=data, filetype="pdf")
-    return [Image.open(io.BytesIO(page.get_pixmap(dpi=dpi).tobytes())) for page in doc]
+    return [Image.open(io.BytesIO(p.get_pixmap(dpi=dpi).tobytes())) for p in doc]
 
 def extract_text(uploaded) -> str:
     raw = uploaded.read()
     pages: List[Image.Image] = []
-
     if uploaded.type == "application/pdf":
         try:
             pages = convert_from_bytes(raw, dpi=300)
-        except (pdf2image_exc.PDFInfoNotInstalledError,
-                pdf2image_exc.PopplerNotInstalledError,
-                Exception):
+        except Exception:
             pages = pdf_to_images(raw)
-
     if not pages:
         try:
             pages = [Image.open(io.BytesIO(raw))]
         except Exception:
-            st.error("❌ File is not a valid image. Upload JPG/PNG or a simple PDF scan.")
+            st.error("❌ Not a valid image/PDF.")
             return ""
+    return "\n".join(ocr_bytes(deskew_and_encode(p)) for p in pages)
 
-    texts = [ocr_bytes(deskew_and_encode(pg)) for pg in pages]
-    return "\n".join(texts)
-
-# ─── 5️⃣ NORMALIZE & FUZZY MATCH ─────────────────────────────────────────────
+# ─── 5️⃣ FUZZY MATCH ─────────────────────────────────────────────────────────
 def normalize(line: str) -> str:
     x = re.sub(r"^[\s\-\•\d\.]+", "", line)
     x = re.sub(r"\b\d+(\.\d+)?\s?(mg|g|ml)\b", "", x, flags=re.IGNORECASE)
@@ -123,18 +142,15 @@ def normalize(line: str) -> str:
 def fuzzy_opts(key: str) -> list[str]:
     names = meds_df.name.tolist()
     matches = process.extract(key, names, limit=5, scorer=fuzz.token_set_ratio)
-    return [n for n, score, _ in matches if score >= 70] or [
-        n for n in names if key in normalize(n)
-    ]
+    return [n for n, score, _ in matches if score >= 70]
 
-# ─── 6️⃣ UI ───────────────────────────────────────────────────────────────────
+# ─── 6️⃣ UI TABS ─────────────────────────────────────────────────────────────
 tabs = st.tabs(["1. Upload Rx", "2. Confirm", "3. Quotes"])
 
-# 6-A Upload
+# Upload tab
 with tabs[0]:
     ico, col = st.columns([4, 6])
-    if os.path.exists("assets/RX Upload.svg"):
-        ico.image("assets/RX Upload.svg", width=500, clamp=True)
+    if os.path.exists("assets/RX Upload.svg"): ico.image("assets/RX Upload.svg", width=500, clamp=True)
     col.header("1️⃣ Upload Prescription")
     uploaded = col.file_uploader("", type=["jpg", "jpeg", "png", "pdf"])
     if uploaded:
@@ -144,7 +160,7 @@ with tabs[0]:
     if "raw" in st.session_state:
         st.text_area("Extracted Text", st.session_state.raw, height=200)
 
-# 6-B Confirm
+# Confirm tab
 with tabs[1]:
     ico, col = st.columns([4, 6])
     if os.path.exists("assets/Confirm Medicine.svg"):
@@ -155,30 +171,23 @@ with tabs[1]:
         col.info("🔎 Complete Step 1 first.")
     else:
         TOKENS = ("tab", "tablet", "cap", "capsule", "mg", "ml", " g ")
-        raw_lines = st.session_state.raw.split("\n")
-        lines = [l for l in raw_lines if any(t in l.lower() for t in TOKENS)]
-        if not lines:
-            lines = [l for l in raw_lines if l.strip()]
+        lines = [l for l in st.session_state.raw.split("\n") if any(t in l.lower() for t in TOKENS)]
+        if not lines: lines = [l for l in st.session_state.raw.split("\n") if l.strip()]
 
         confirmed = []
-        if not lines:
-            col.info("⚠ Unable to find medicine lines in OCR output.")
-        else:
-            for i, line in enumerate(lines, 1):
-                key = normalize(line)
-                if len(key) < 4:
-                    continue
-                opts = fuzzy_opts(key)
-                if not opts:
-                    continue
-                c1, c2 = st.columns([3, 1])
-                med = c1.selectbox(f"{i}. {line}", opts, key=f"med_{i}")
-                qty = c2.text_input("Qty", key=f"qty_{i}")
-                confirmed.append((med, qty))
-            if confirmed:
-                st.session_state.confirmed = confirmed
+        for i, line in enumerate(lines, 1):
+            key = normalize(line)
+            if len(key) < 4: continue
+            opts = fuzzy_opts(key)
+            if not opts: continue
+            c1, c2 = st.columns([3, 1])
+            med = c1.selectbox(f"{i}. {line}", opts, key=f"med_{i}")
+            qty = c2.text_input("Qty", key=f"qty_{i}")
+            confirmed.append((med, qty))
+        if confirmed: st.session_state.confirmed = confirmed
+        elif not confirmed: col.info("⚠ No medicine lines detected.")
 
-# 6-C Quotes
+# Quotes tab
 with tabs[2]:
     ico, col = st.columns([4, 6])
     if os.path.exists("assets/Price Comparison.svg"):
@@ -189,7 +198,6 @@ with tabs[2]:
         col.info("📝 Complete Step 2 first.")
     else:
         for med, qty in st.session_state.confirmed:
-
             try:
                 qty_int = max(1, int(qty))
             except Exception:
@@ -198,18 +206,13 @@ with tabs[2]:
             col.subheader(f"{med} × {qty_int}")
             mid = name_to_id.get(med)
             df = vendor_df[vendor_df.medicine_id == mid].copy()
-
             if df.empty:
                 col.warning("No vendor data.")
                 continue
 
             df["price_per_tab"] = df.price
             df["total"] = df.price_per_tab * qty_int
-            df["stock_note"] = np.where(
-                df.stock >= qty_int,
-                "",
-                "only " + df.stock.astype(str) + " left"
-            )
+            df["stock_note"] = np.where(df.stock >= qty_int, "", "only " + df.stock.astype(str) + " left")
             df["instock_flag"] = (df.stock >= qty_int).astype(int)
 
             metric = "total" if sort_by.startswith("Price") else "eta_minutes"
@@ -217,26 +220,18 @@ with tabs[2]:
 
             best = df.iloc[0]
             if sort_by.startswith("Price"):
-                col.metric(
-                    "Best Price",
-                    f"₹{best.total:.2f}",
-                    f"{best.eta_minutes} min ETA"
-                )
+                col.metric("Best Price", f"₹{best.total:.2f}", f"{best.eta_minutes} min ETA")
             else:
-                col.metric(
-                    "Fastest ETA",
-                    f"{best.eta_minutes} min",
-                    f"₹{best.total:.2f}"
-                )
+                col.metric("Fastest ETA", f"{best.eta_minutes} min", f"₹{best.total:.2f}")
 
-            out = (
-                df[["vendor_name", "price_per_tab", "total", "stock_note", "eta_minutes"]]
-                .rename(columns={
-                    "vendor_name": "vendor",
-                    "price_per_tab": "price/tab",
-                    "stock_note": "stock",
-                    "eta_minutes": "ETA (min)"
-                })
-                .reset_index(drop=True)
-            )
-            col.dataframe(out, use_container_width=True)
+            # Card grid
+            cards = []
+            for _, r in df.iterrows():
+                # placeholder image fallback
+                img_url = (
+                    r.get("image_url")
+                    if "image_url" in r and pd.notna(r["image_url"])
+                    else f"https://dummyimage.com/300x200/ffffff/000000&text={r['vendor_name'].split()[0]}"
+                )
+                cards.append(product_card(img_url, r["vendor_name"], r["total"], r["stock_note"]))
+            col.markdown('<div class="grid">' + "".join(cards) + "</div>", unsafe_allow_html=True)
