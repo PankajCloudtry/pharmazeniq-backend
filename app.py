@@ -1,5 +1,5 @@
 import os, io, re, base64, json
-from typing import Tuple
+from typing import Tuple, List
 
 import streamlit as st
 import pandas as pd
@@ -7,7 +7,7 @@ import numpy as np
 import cv2
 from PIL import Image
 from rapidfuzz import process, fuzz
-from pdf2image import convert_from_bytes
+from pdf2image import convert_from_bytes, exceptions as pdf2image_exc
 from google.oauth2 import service_account
 from google.cloud import vision_v1
 
@@ -18,12 +18,6 @@ if raw is None:
     st.stop()
 
 info = json.loads(raw) if isinstance(raw, str) else dict(raw)
-
-# sanitize private_key: strip leading/trailing spaces on every line
-if "private_key" in info:
-    pk_lines = [ln.strip() for ln in info["private_key"].splitlines() if ln.strip()]
-    info["private_key"] = "\n".join(pk_lines) + "\n"
-
 creds = service_account.Credentials.from_service_account_info(info)
 client = vision_v1.ImageAnnotatorClient(credentials=creds)
 
@@ -32,8 +26,6 @@ st.set_page_config(page_title="Pharmazeniq", page_icon="💊", layout="wide")
 
 if os.path.exists("assets/header_banner.png"):
     st.image("assets/header_banner.png", use_container_width=True)
-else:
-    st.warning("⚠️ header_banner.png not found in assets/")
 
 st.markdown(
     """
@@ -52,13 +44,9 @@ with st.sidebar:
     if os.path.exists("animation.gif"):
         b64 = base64.b64encode(open("animation.gif", "rb").read()).decode()
         st.markdown(
-            f'<img src="data:image/gif;base64,{b64}" '
-            'style="width:100%;margin-bottom:1rem;">',
+            f'<img src="data:image/gif;base64,{b64}" style="width:100%;margin-bottom:1rem;">',
             unsafe_allow_html=True,
         )
-    else:
-        st.warning("⚠️ animation.gif not found in repo root")
-
     st.markdown("## Filters")
     sort_by = st.radio("Sort by", ["Price (Low→High)", "Fastest ETA"])
     st.markdown("---")
@@ -92,47 +80,56 @@ def deskew_and_encode(img: Image.Image) -> bytes:
     _, buf = cv2.imencode(".jpg", deskew)
     return buf.tobytes()
 
-
 def ocr_bytes(b: bytes) -> str:
     img = vision_v1.Image(content=b)
     resp = client.document_text_detection(image=img)
     return resp.full_text_annotation.text or ""
 
-
 def extract_text(uploaded) -> str:
     raw = uploaded.read()
-    pages = []
+    pages: List[Image.Image] = []
+
+    # if PDF, attempt conversion
     if uploaded.type == "application/pdf":
         try:
             pages = convert_from_bytes(raw, dpi=300)
-        except Exception:
-            pages = []
+        except (pdf2image_exc.PDFInfoNotInstalledError,
+                pdf2image_exc.PopplerNotInstalledError,
+                Exception):
+            st.warning(
+                "⚠️ PDF conversion not available on the server. "
+                "Please upload a JPG/PNG scan instead."
+            )
+
+    # if not PDF or conversion failed, treat as single image
     if not pages:
-        pages = [Image.open(io.BytesIO(raw))]
+        try:
+            pages = [Image.open(io.BytesIO(raw))]
+        except Exception:
+            st.error("❌ File is not a valid image. Upload JPG/PNG or a simple PDF scan.")
+            return ""
+
     texts = [ocr_bytes(deskew_and_encode(pg)) for pg in pages]
     return "\n".join(texts)
 
 # ─── 5️⃣ NORMALIZE & FUZZY MATCH ─────────────────────────────────────────────
 def normalize(line: str) -> str:
-    x = re.sub(r"^[\s\-\•\d\.]+", "", line)
-    x = re.sub(r"\b\d+(\.\d+)?\s?(mg|g|ml)\b", "", x, flags=re.IGNORECASE)
-    x = re.sub(r"\b(tab|tabs|cap|caps)\b", "", x, flags=re.IGNORECASE)
+    x = re.sub(r"^[\\s\\-\\•\\d\\.]+", "", line)
+    x = re.sub(r"\\b\\d+(\\.\\d+)?\\s?(mg|g|ml)\\b", "", x, flags=re.IGNORECASE)
+    x = re.sub(r"\\b(tab|tabs|cap|caps)\\b", "", x, flags=re.IGNORECASE)
     x = re.sub(r"[^A-Za-z0-9 ]+", "", x)
     return x.lower().strip()
-
 
 def fuzzy_opts(key: str) -> list[str]:
     names = meds_df.name.tolist()
     matches = process.extract(key, names, limit=5, scorer=fuzz.token_set_ratio)
-    opts = [n for n, score, _ in matches if score >= 50]
-    if not opts:
-        opts = [n for n in names if key in normalize(n)]
-    return opts
+    return [n for n, score, _ in matches if score >= 50] or [
+        n for n in names if key in normalize(n)
+    ]
 
-# ─── 6️⃣ THREE-STEP UI ───────────────────────────────────────────────────────
+# ─── 6️⃣ UI ───────────────────────────────────────────────────────────────────
 tabs = st.tabs(["1. Upload Rx", "2. Confirm", "3. Quotes"])
 
-# Step 1: OCR
 with tabs[0]:
     ico, col = st.columns([4, 6])
     if os.path.exists("assets/RX Upload.svg"):
@@ -146,7 +143,6 @@ with tabs[0]:
     if "raw" in st.session_state:
         st.text_area("Extracted Text", st.session_state.raw, height=200)
 
-# Step 2: Confirm
 with tabs[1]:
     ico, col = st.columns([4, 6])
     if os.path.exists("assets/Confirm Medicine.svg"):
@@ -156,26 +152,21 @@ with tabs[1]:
         col.info("🔎 Complete Step 1 first.")
     else:
         lines = [
-            l
-            for l in st.session_state.raw.split("\n")
-            if any(tok in l.lower() for tok in ("tab", "mg", "cap"))
+            l for l in st.session_state.raw.split("\\n")
+            if any(t in l.lower() for t in ("tab", "mg", "cap"))
         ]
         confirmed = []
-        if not lines:
-            col.info("⚠ No ‘tab’/‘mg’/‘cap’ lines found.")
-        else:
-            for i, line in enumerate(lines, start=1):
-                opts = fuzzy_opts(normalize(line))
-                if not opts:
-                    continue
-                c1, c2 = st.columns([3, 1])
-                med = c1.selectbox(f"{i}. {line}", opts, key=f"med_{i}")
-                qty = c2.text_input("Qty", key=f"qty_{i}")
-                confirmed.append((med, qty))
-            if confirmed:
-                st.session_state.confirmed = confirmed
+        for i, line in enumerate(lines, 1):
+            opts = fuzzy_opts(normalize(line))
+            if not opts:
+                continue
+            c1, c2 = st.columns([3, 1])
+            med = c1.selectbox(f"{i}. {line}", opts, key=f"med_{i}")
+            qty = c2.text_input("Qty", key=f"qty_{i}")
+            confirmed.append((med, qty))
+        if confirmed:
+            st.session_state.confirmed = confirmed
 
-# Step 3: Quotes & ETA
 with tabs[2]:
     ico, col = st.columns([4, 6])
     if os.path.exists("assets/Price Comparison.svg"):
@@ -199,8 +190,5 @@ with tabs[2]:
                 col.metric("Best Price", f"₹{best.total:.2f}", f"{best.eta_minutes} min ETA")
             else:
                 col.metric("Fastest ETA", f"{best.eta_minutes} min", f"₹{best.total:.2f}")
-            col.dataframe(
-                df[["vendor_name", "price", "stock", "eta_minutes", "total"]],
-                use_container_width=True,
-            )
-            
+            col.dataframe(df[["vendor_name", "price", "stock", "eta_minutes", "total"]],
+                          use_container_width=True)
