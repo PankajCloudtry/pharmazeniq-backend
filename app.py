@@ -6,83 +6,72 @@ import cv2
 from PIL import Image
 from rapidfuzz import process, fuzz
 from pdf2image import convert_from_bytes
+
 from google.cloud import vision
 from google.oauth2 import service_account
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 1️⃣  Page config & header banner
-# ───────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Pharmazeniq", page_icon="💊", layout="wide")
 
+# ─── PAGE CONFIG & HEADER ────────────────────────────────────────────────────
+st.set_page_config("Pharmazeniq", "💊", layout="wide")
 if os.path.exists("assets/header_banner.png"):
     st.image("assets/header_banner.png", use_container_width=True)
 else:
     st.warning("⚠️ header_banner.png not found in assets/")
 
-# Enormous tabs CSS
-st.markdown("""
-    <style>
-      [role="tablist"] [role="tab"] {
-        font-size:64px !important;
-        padding: 1rem 2rem !important;
-      }
-    </style>
-""", unsafe_allow_html=True)
+# ─── LOAD GOOGLE CREDENTIALS FROM SECRETS ────────────────────────────────────
+# This reads the JSON from your Streamlit secrets and builds credentials.
+sa_json = st.secrets["google"]["GOOGLE_APPLICATION_CREDENTIALS_JSON"]
+sa_info = json.loads(sa_json)
+credentials = service_account.Credentials.from_service_account_info(sa_info)
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 2️⃣  Sidebar: show animation.gif + filters + support
-# ───────────────────────────────────────────────────────────────────────────────
+# Initialize Vision client with explicit credentials
+client = vision.ImageAnnotatorClient(credentials=credentials)
+
+
+# ─── SIDEBAR & FILTERS ───────────────────────────────────────────────────────
 with st.sidebar:
+    # animation.gif
     if os.path.exists("animation.gif"):
-        b64 = base64.b64encode(open("animation.gif","rb").read()).decode()
+        gif_bytes = open("animation.gif", "rb").read()
+        b64 = base64.b64encode(gif_bytes).decode()
         st.markdown(
             f'<img src="data:image/gif;base64,{b64}" style="width:100%;margin-bottom:1rem;">',
             unsafe_allow_html=True
         )
     else:
-        st.warning("⚠️ animation.gif not found in project root")
+        st.warning("⚠️ animation.gif not found")
+
     st.markdown("## Filters")
     sort_by = st.radio("Sort by", ["Price (Low→High)", "ETA"])
     st.markdown("---")
     st.markdown("Need help? 📧 support@pharmazeniq.com")
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 3️⃣  Google Vision client (from Streamlit Secrets)
-# ───────────────────────────────────────────────────────────────────────────────
-# In your Streamlit Cloud secrets.toml:
-# GOOGLE_CREDENTIALS = """{ ... your JSON ... }"""
-sa_json = st.secrets["GOOGLE_CREDENTIALS"]
-sa_info = json.loads(sa_json)
-credentials = service_account.Credentials.from_service_account_info(sa_info)
-client = vision.ImageAnnotatorClient(credentials=credentials)
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 4️⃣  Load your medicine & vendor data
-# ───────────────────────────────────────────────────────────────────────────────
+# ─── LOAD YOUR DATASETS ───────────────────────────────────────────────────────
 @st.cache_data
 def load_data():
-    meds_df   = pd.read_csv("data/medicines.csv")
+    meds_df = pd.read_csv("data/medicines.csv")
     vendor_df = pd.read_csv("data/vendor_prices.csv")
     return meds_df, vendor_df
 
 meds_df, vendor_df = load_data()
 name_to_id = dict(zip(meds_df.name, meds_df.id))
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 5️⃣  OCR helpers: deskew, convert PDF→images, call Vision API
-# ───────────────────────────────────────────────────────────────────────────────
+
+# ─── OCR + PREPROCESSING ─────────────────────────────────────────────────────
 def deskew_and_encode(img: Image.Image) -> bytes:
-    arr  = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+    arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
     blur = cv2.bilateralFilter(gray, 9, 75, 75)
     _, th = cv2.threshold(blur, 0, 255,
                           cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    coords = np.column_stack(np.where(th>0))
-    angle  = cv2.minAreaRect(coords)[-1]
-    if angle < -45: angle += 90
-    h,w = th.shape
-    M = cv2.getRotationMatrix2D((w//2,h//2), angle, 1.0)
-    deskew = cv2.warpAffine(th, M, (w,h),
+    coords = np.column_stack(np.where(th > 0))
+    angle = cv2.minAreaRect(coords)[-1]
+    if angle < -45:
+        angle += 90
+    h, w = th.shape
+    M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
+    deskew = cv2.warpAffine(th, M, (w, h),
                             flags=cv2.INTER_CUBIC,
                             borderMode=cv2.BORDER_REPLICATE)
     _, buf = cv2.imencode(".jpg", deskew)
@@ -98,16 +87,15 @@ def extract_text(uploaded) -> str:
     if uploaded.type == "application/pdf":
         try:
             pages = convert_from_bytes(raw, dpi=300)
-        except Exception:
+        except:
             pages = []
     if not pages:
         pages = [Image.open(io.BytesIO(raw))]
-    texts = [ocr_bytes(deskew_and_encode(pg)) for pg in pages]
+    texts = [ ocr_bytes(deskew_and_encode(pg)) for pg in pages ]
     return "\n".join(texts)
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 6️⃣  Fuzzy matching helpers
-# ───────────────────────────────────────────────────────────────────────────────
+
+# ─── NORMALIZATION & FUZZY MATCHING ─────────────────────────────────────────
 def normalize(line: str) -> str:
     x = re.sub(r"^[\s\-\•\d\.]+","", line)
     x = re.sub(r"\b\d+(\.\d+)?\s?(mg|g|ml)\b","", x, flags=re.IGNORECASE)
@@ -116,19 +104,18 @@ def normalize(line: str) -> str:
     return x.lower().strip()
 
 def fuzzy_opts(key: str) -> list[str]:
-    names   = meds_df.name.tolist()
+    names = meds_df.name.tolist()
     matches = process.extract(key, names, limit=5, scorer=fuzz.token_set_ratio)
-    opts    = [n for n,score,_ in matches if score>=50]
+    opts = [n for n,score,_ in matches if score >= 50]
     if not opts:
         opts = [n for n in names if key in normalize(n)]
     return opts
 
-# ───────────────────────────────────────────────────────────────────────────────
-# 7️⃣  Build the 3‐step Streamlit UI
-# ───────────────────────────────────────────────────────────────────────────────
+
+# ─── BUILD YOUR 3-STEP UI ────────────────────────────────────────────────────
 tabs = st.tabs(["1. OCR", "2. Confirm", "3. Quotes"])
 
-# — Step 1: Upload & OCR —
+# Step 1: OCR
 with tabs[0]:
     ico, col = st.columns([4,6])
     if os.path.exists("assets/RX Upload.svg"):
@@ -142,7 +129,7 @@ with tabs[0]:
     if "raw" in st.session_state:
         st.text_area("Extracted Text", st.session_state.raw, height=200)
 
-# — Step 2: Confirm Medicines —
+# Step 2: Confirm
 with tabs[1]:
     ico, col = st.columns([4,6])
     if os.path.exists("assets/Confirm Medicine.svg"):
@@ -151,26 +138,21 @@ with tabs[1]:
     if "raw" not in st.session_state:
         col.info("🔍 Please complete Step 1 first.")
     else:
-        lines = [
-            l for l in st.session_state.raw.split("\n")
-            if any(tok in l.lower() for tok in ("tab","mg","cap"))
-        ]
-        if not lines:
-            col.info("⚠️ No lines with “tab”/“mg”/“cap” found.")
-        else:
-            confirmed = []
-            for idx,line in enumerate(lines,1):
-                opts = fuzzy_opts(normalize(line))
-                if not opts:
-                    continue
-                c1,c2 = st.columns([3,1])
-                med = c1.selectbox(f"{idx}. {line}", opts, key=f"med_{idx}")
-                qty = c2.text_input("Qty", key=f"qty_{idx}")
-                confirmed.append((med, qty))
-            if confirmed:
-                st.session_state.confirmed = confirmed
+        lines = [l for l in st.session_state.raw.split("\n")
+                 if any(tok in l.lower() for tok in ("tab","mg","cap"))]
+        confirmed = []
+        for idx, line in enumerate(lines, 1):
+            opts = fuzzy_opts(normalize(line))
+            if not opts:
+                continue
+            c1, c2 = st.columns([3,1])
+            med = c1.selectbox(f"{idx}. {line}", opts, key=f"med_{idx}")
+            qty = c2.text_input("Qty", key=f"qty_{idx}")
+            confirmed.append((med, qty))
+        if confirmed:
+            st.session_state.confirmed = confirmed
 
-# — Step 3: Compare Quotes & ETA —
+# Step 3: Quotes
 with tabs[2]:
     ico, col = st.columns([4,6])
     if os.path.exists("assets/Price Comparison.svg"):
@@ -182,21 +164,16 @@ with tabs[2]:
         for med, qty in st.session_state.confirmed:
             col.subheader(f"{med} × {qty or '–'}")
             mid = name_to_id.get(med)
-            df  = vendor_df[vendor_df.medicine_id==mid].copy()
+            df = vendor_df[vendor_df.medicine_id == mid].copy()
             if df.empty:
                 col.warning("No quotes available.")
                 continue
             df["total"] = df.price * (int(qty) if qty.isdigit() else 1)
-            sort_col   = "total" if sort_by.startswith("Price") else "eta_minutes"
+            sort_col = "total" if sort_by.startswith("Price") else "eta_minutes"
             df = df.sort_values(sort_col)
             best = df.iloc[0]
             if sort_by.startswith("Price"):
-                col.metric("Best Price", f"₹{best.total:.2f}",
-                           f"{best.eta_minutes} min ETA")
+                col.metric("Best Price", f"₹{best.total:.2f}", f"{best.eta_minutes} min ETA")
             else:
-                col.metric("Fastest ETA", f"{best.eta_minutes} min",
-                           f"₹{best.total:.2f}")
-            col.dataframe(
-                df[["vendor_name","price","stock","eta_minutes","total"]],
-                use_container_width=True
-            )
+                col.metric("Fastest ETA", f"{best.eta_minutes} min", f"₹{best.total:.2f}")
+            col.dataframe(df[["vendor_name","price","stock","eta_minutes","total"]], use_container_width=True)
