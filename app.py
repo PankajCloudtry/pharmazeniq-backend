@@ -9,7 +9,7 @@ import cv2
 from PIL import Image
 from rapidfuzz import process, fuzz
 from pdf2image import convert_from_bytes
-import fitz
+import fitz                                  # PyMuPDF
 from google.oauth2 import service_account
 from google.cloud import vision_v1
 
@@ -30,17 +30,20 @@ st.markdown(
 <style>
 html,body{height:100%;margin:0;font-family:'Inter',sans-serif}
 .block-container{padding:0 1rem 4rem;height:100%;overflow-y:auto}
+
 .card{border:1px solid #eee;border-radius:.8rem;padding:.8rem;
       box-shadow:0 1px 4px rgba(0,0,0,.06);transition:.15s}
 .card:hover{transform:translateY(-4px);box-shadow:0 6px 16px rgba(0,0,0,.12)}
 .card img{width:100%;border-radius:.6rem}
 .card-title{font-size:.95rem;font-weight:600;margin:.4rem 0 .2rem}
-.card-price{font-size:.9rem;color:#e91e63;font-weight:600}
-.stock-badge{font-size:.75rem;color:#555;background:#f5f5f5;padding:0 .4rem;border-radius:.4rem}
+.stock-badge{font-size:.75rem;color:#555;background:#f5f5f5;
+             padding:0 .4rem;border-radius:.4rem}
+
 .grid{display:grid;gap:1rem;padding:0 .5rem;overflow-x:hidden}
 @media(max-width:600px){.grid{grid-template-columns:repeat(2,1fr)}}
 @media(min-width:601px) and (max-width:992px){.grid{grid-template-columns:repeat(3,1fr)}}
 @media(min-width:993px){.grid{grid-template-columns:repeat(3,1fr)}}
+
 footer{visibility:hidden}
 </style>
 """,
@@ -174,39 +177,53 @@ with tabs[1]:
         if confirmed: st.session_state.confirmed=confirmed
 
 
-# Quotes
+# Quotes  – vendor-level comparison
 with tabs[2]:
     st.header("3️⃣ Compare Prices & ETA")
+
     if "confirmed" not in st.session_state:
         st.info("Confirm medicines first.")
-    else:
-        for med,qty in st.session_state.confirmed:
-            try: qty_int=max(1,int(qty))
-            except ValueError: qty_int=1
+        st.stop()
 
-            st.subheader(f"{med} × {qty_int}")
-            df=vendor_df[vendor_df.medicine_id==name_to_id.get(med)].copy()
-            if df.empty:
-                st.warning("No vendor data."); continue
+    # Build order list
+    order=[]
+    for med_name, qty in st.session_state.confirmed:
+        try: qty=max(1,int(qty))
+        except: qty=1
+        order.append({"mid": name_to_id.get(med_name), "qty": qty, "name": med_name})
 
-            df=df[df.stock>=qty_int].copy()         # in-stock only
-            df["total"]=df.price*qty_int
+    wanted_ids={o["mid"] for o in order}
+    df=vendor_df[vendor_df.medicine_id.isin(wanted_ids)].copy()
+    qty_map={o["mid"]:o["qty"] for o in order}
+    df["qty"]=df.medicine_id.map(qty_map)
+    df=df[df.stock>=df.qty]                 # enough stock
+    df["total"]=df.price*df.qty
 
-            sort_key="total" if sort_by.startswith("Price") else "eta_minutes"
-            df=df.sort_values(sort_key,ascending=True).reset_index(drop=True)
+    complete=(df.groupby("vendor_name")
+                .agg(n_meds=("medicine_id","nunique"),
+                     sum_price=("total","sum"),
+                     eta=("eta_minutes","max"))
+                .reset_index())
+    complete=complete[complete.n_meds==len(order)]
+    if complete.empty:
+        st.warning("No single vendor can fulfil the whole order.")
+        st.stop()
 
-            avg_price=df.total.mean(); avg_eta=df.eta_minutes.mean()
-            col1,col2=st.columns(2)
-            col1.metric("Average price",f"₹{avg_price:.0f}")
-            col2.metric("Average ETA",f"{avg_eta:.0f} min")
+    key="sum_price" if sort_by.startswith("Price") else "eta"
+    complete=complete.sort_values(key).reset_index(drop=True)
 
-            cards=""
-            for _,r in df.iterrows():
-                subtitle=(f"{r.eta_minutes} min<br>₹{r.total:.0f}"
-                          if sort_key=="eta_minutes"
-                          else f"₹{r.total:.0f}<br>{r.eta_minutes} min")
-                cards+=make_card(
-                    img="https://dummyimage.com/300x200/ffffff/000000&text=%20",
-                    vendor_html=f"{r.vendor_name}<br><small>{subtitle}</small>",
-                )
-            st.markdown(f'<div class="grid">{cards}</div>',unsafe_allow_html=True)
+    avg_price=complete.sum_price.mean(); avg_eta=complete.eta.mean()
+    col1,col2=st.columns(2)
+    col1.metric("Average price",f"₹{avg_price:.0f}")
+    col2.metric("Average ETA",f"{avg_eta:.0f} min")
+
+    cards=""
+    for _,r in complete.iterrows():
+        subtitle=(f"{r.eta} min<br>₹{r.sum_price:.0f}"
+                  if key=="eta"
+                  else f"₹{r.sum_price:.0f}<br>{r.eta} min")
+        cards+=make_card(
+            img="https://dummyimage.com/300x200/ffffff/000000&text=%20",
+            vendor_html=f"{r.vendor_name}<br><small>{subtitle}</small>",
+        )
+    st.markdown(f'<div class="grid">{cards}</div>',unsafe_allow_html=True)
