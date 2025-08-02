@@ -1,3 +1,4 @@
+# === app.py =================================================================
 import os, io, re, base64, json
 from typing import Tuple, List
 
@@ -12,26 +13,23 @@ import fitz
 from google.oauth2 import service_account
 from google.cloud import vision_v1
 
+
 # ── 0. CREDENTIALS ──────────────────────────────────────────────────────────
 raw = st.secrets.get("GOOGLE_CREDENTIALS") or st.secrets.get("service_account_json")
-if raw is None:
-    st.error("❌ Add Vision creds in Secrets then reload.")
-    st.stop()
-creds = service_account.Credentials.from_service_account_info(
-    json.loads(raw) if isinstance(raw, str) else dict(raw)
-)
+info = json.loads(raw) if isinstance(raw, str) else dict(raw)
+creds = service_account.Credentials.from_service_account_info(info)
 client = vision_v1.ImageAnnotatorClient(credentials=creds)
 
-# ── 1. PAGE CONFIG & GLOBAL CSS ─────────────────────────────────────────────
+
+# ── 1. PAGE CONFIG + GLOBAL CSS ─────────────────────────────────────────────
 st.set_page_config("Pharmazeniq", "💊", layout="wide")
 
 st.markdown(
     """
-<link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
 <style>
 html,body,div[class^="st"]{font-family:'Inter',sans-serif}
-.block-container{padding:0 1rem;min-height:100vh;overflow-y:auto}
+.block-container{padding:0 1rem;min-height:100vh}
 .card{border:1px solid #eee;border-radius:.8rem;padding:.8rem;
       box-shadow:0 1px 4px rgba(0,0,0,.06);transition:.15s}
 .card:hover{transform:translateY(-4px);
@@ -39,8 +37,7 @@ html,body,div[class^="st"]{font-family:'Inter',sans-serif}
 .card img{width:100%;border-radius:.6rem}
 .card-title{font-size:.95rem;font-weight:600;margin:.4rem 0 .2rem}
 .card-price{font-size:.9rem;color:#e91e63;font-weight:600}
-.stock-badge{font-size:.75rem;color:#555;background:#f5f5f5;
-             padding:0 .4rem;border-radius:.4rem}
+.stock-badge{font-size:.75rem;color:#555;background:#f5f5f5;padding:0 .4rem;border-radius:.4rem}
 .grid{display:grid;gap:1rem;padding:0 .5rem;overflow-x:hidden}
 @media(max-width:600px){.grid{grid-template-columns:repeat(2,1fr)}}
 @media(min-width:601px) and (max-width:992px){.grid{grid-template-columns:repeat(3,1fr)}}
@@ -51,15 +48,29 @@ footer{visibility:hidden}
     unsafe_allow_html=True,
 )
 
-def card(img: str, vendor: str, total: float, note: str):
+def card(img: str, vendor: str, total: float, note: str) -> str:
     badge = f'<span class="stock-badge">{note}</span>' if note else ""
-    return (
-        f'<div class="card"><img src="{img}" loading="lazy">'
-        f'<div class="card-title">{vendor}</div>'
-        f'<div class="card-price">₹{total:.2f}</div>{badge}</div>'
-    )
+    return (f'<div class="card"><img src="{img}" loading="lazy">'
+            f'<div class="card-title">{vendor}</div>'
+            f'<div class="card-price">₹{total:.2f}</div>{badge}</div>')
 
-# ── 2. DATA ─────────────────────────────────────────────────────────────────
+
+# ── 2. HEADER & SIDEBAR ─────────────────────────────────────────────────────
+if os.path.exists("assets/header_banner.png"):
+    st.image("assets/header_banner.png", use_container_width=True)
+
+with st.sidebar:
+    if os.path.exists("animation.gif"):
+        b64 = base64.b64encode(open("animation.gif","rb").read()).decode()
+        st.markdown(f'<img src="data:image/gif;base64,{b64}" style="width:100%;margin-bottom:1rem;">',
+                    unsafe_allow_html=True)
+    st.markdown("## Filters")
+    sort_by = st.radio("Sort by", ["Price (Low→High)", "Fastest ETA"])
+    st.markdown("---")
+    st.markdown("Need help? 📧 support@pharmazeniq.com")
+
+
+# ── 3. LOAD DATA ────────────────────────────────────────────────────────────
 @st.cache_data
 def load_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
     return pd.read_csv("data/medicines.csv"), pd.read_csv("data/vendor_prices.csv")
@@ -67,126 +78,94 @@ def load_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
 meds_df, vendor_df = load_data()
 name_to_id = dict(zip(meds_df.name, meds_df.id))
 
-# ── 3. OCR HELPERS ──────────────────────────────────────────────────────────
+
+# ── 4. OCR HELPERS ──────────────────────────────────────────────────────────
 def deskew(img: Image.Image) -> bytes:
-    arr = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
-    gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
-    blur = cv2.bilateralFilter(gray, 9, 75, 75)
-    _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    coords = np.column_stack(np.where(th > 0))
+    g = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2GRAY)
+    _, th = cv2.threshold(g, 0, 255, cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+    coords = np.column_stack(np.where(th>0))
     angle = cv2.minAreaRect(coords)[-1]
-    angle = angle + 90 if angle < -45 else angle
-    M = cv2.getRotationMatrix2D((th.shape[1] / 2, th.shape[0] / 2), angle, 1)
-    warped = cv2.warpAffine(th, M, th.shape[::-1], flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-    _, buf = cv2.imencode(".jpg", warped)
+    angle += 90 if angle < -45 else 0
+    M = cv2.getRotationMatrix2D((th.shape[1]/2, th.shape[0]/2), angle, 1)
+    warp = cv2.warpAffine(th, M, th.shape[::-1], borderMode=cv2.BORDER_REPLICATE)
+    _, buf = cv2.imencode(".jpg", warp)
     return buf.tobytes()
 
-def ocr(image_bytes: bytes) -> str:
-    return client.document_text_detection(image=vision_v1.Image(content=image_bytes)).full_text_annotation.text
+def ocr(b: bytes) -> str:
+    return client.document_text_detection(image=vision_v1.Image(content=b)).full_text_annotation.text
 
-def pdf_to_images(data: bytes, dpi=300):
-    return [Image.open(io.BytesIO(p.get_pixmap(dpi=dpi).tobytes())) for p in fitz.open(stream=data, filetype="pdf")]
+def pdf2images(data: bytes, dpi=300):
+    return [Image.open(io.BytesIO(p.get_pixmap(dpi=dpi).tobytes()))
+            for p in fitz.open(stream=data, filetype="pdf")]
 
-def extract_text(uploaded) -> str:
-    raw = uploaded.read()
-    pages = []
-    if uploaded.type == "application/pdf":
-        try:
-            from pdf2image import convert_from_bytes
-            pages = convert_from_bytes(raw, dpi=300)
-        except Exception:
-            pages = pdf_to_images(raw)
+def extract_text(upload):
+    raw = upload.read(); pages=[]
+    if upload.type=="application/pdf":
+        try: pages = convert_from_bytes(raw, dpi=300)
+        except Exception: pages = pdf2images(raw)
     if not pages:
-        try:
-            pages = [Image.open(io.BytesIO(raw))]
-        except Exception:
-            st.error("❌ Unsupported file.")
-            return ""
+        try: pages=[Image.open(io.BytesIO(raw))]
+        except: st.error("Unsupported file."); return ""
     return "\n".join(ocr(deskew(p)) for p in pages)
 
-# ── 4. FUZZY MATCH ───────────────────────────────────────────────────────────
-TOKENS = ("tab", "tablet", "cap", "capsule", "syr", "syp", "inj", "mg", "ml")
-def norm(txt: str):
-    txt = re.sub(r"^[\s\-\•\d\.]+", "", txt)
-    txt = re.sub(r"[^A-Za-z0-9 ]+", "", txt)
-    return txt.lower().strip()
 
-def match_options(key: str):
-    return [n for n, s, _ in process.extract(key, meds_df.name, limit=5) if s >= 60]
+# ── 5. FUZZY MATCH ──────────────────────────────────────────────────────────
+TOKENS = ("tab","tablet","cap","capsule","syr","syp","inj","mg","ml")
+def norm(t:str): return re.sub(r"[^A-Za-z0-9 ]+","",t).lower().strip()
+def options(key:str):
+    return [n for n,s,_ in process.extract(key, meds_df.name, limit=5) if s>=60]
 
-# ── 5. UI ────────────────────────────────────────────────────────────────────
-tabs = st.tabs(["Upload Rx", "Confirm", "Quotes"])
 
-# Upload tab
+# ── 6. TABS ─────────────────────────────────────────────────────────────────
+tabs = st.tabs(["Upload Rx","Confirm","Quotes"])
+
 with tabs[0]:
     st.header("1️⃣ Upload Prescription")
-    file = st.file_uploader("", type=["jpg", "jpeg", "png", "pdf"])
-    if file:
-        with st.spinner("OCR in progress…"):
-            st.session_state.raw = extract_text(file)
+    up = st.file_uploader("", ["jpg","jpeg","png","pdf"])
+    if up:
+        with st.spinner("OCR running…"): st.session_state.raw = extract_text(up)
         st.success("Done ✅")
     if "raw" in st.session_state:
         st.text_area("Extracted Text", st.session_state.raw, height=200)
 
-# Confirm tab
 with tabs[1]:
     st.header("2️⃣ Confirm Medicines")
     if "raw" not in st.session_state:
-        st.info("Upload a prescription first.")
+        st.info("Upload prescription first.")
     else:
-        lines = [
-            l for l in st.session_state.raw.split("\n")
-            if any(t in l.lower() for t in TOKENS) and len(norm(l)) >= 4
-        ] or [l for l in st.session_state.raw.split("\n") if l.strip()]
-        confirmed = []
-        for i, line in enumerate(lines, 1):
-            opts = match_options(norm(line))
+        lines=[l for l in st.session_state.raw.split("\n")
+               if any(t in l.lower() for t in TOKENS) and len(norm(l))>=4]
+        if not lines: lines=[l for l in st.session_state.raw.split("\n") if l.strip()]
+        confirmed=[]
+        for i,l in enumerate(lines,1):
+            opts=options(norm(l)); 
             if not opts: continue
-            c1, c2 = st.columns([3, 1])
-            med = c1.selectbox(f"{i}. {line}", opts, key=f"med_{i}")
-            qty = c2.text_input("Qty", key=f"qty_{i}")
-            confirmed.append((med, qty))
-        if not confirmed:
-            st.info("No matches—enter manually below.")
-            med = st.text_input("Medicine name")
-            qty = st.text_input("Qty")
-            if med: confirmed.append((med, qty))
-        if confirmed:
-            st.session_state.confirmed = confirmed
+            c1,c2=st.columns([3,1])
+            med=c1.selectbox(f"{i}. {l}",opts,key=f"med_{i}")
+            qty=c2.text_input("Qty",key=f"qty_{i}"); confirmed.append((med,qty))
+        if confirmed: st.session_state.confirmed=confirmed
 
-# Quotes tab
 with tabs[2]:
     st.header("3️⃣ Compare Prices & ETA")
     if "confirmed" not in st.session_state:
         st.info("Confirm medicines first.")
     else:
-        for med, qty in st.session_state.confirmed:
-            try: qty_int = max(1, int(qty))
-            except: qty_int = 1
+        for med,qty in st.session_state.confirmed:
+            try: qty_int=max(1,int(qty))
+            except: qty_int=1
             st.subheader(f"{med} × {qty_int}")
-            mid = name_to_id.get(med)
-            df = vendor_df[vendor_df.medicine_id == mid].copy()
-            if df.empty:
-                st.warning("No vendors found.")
-                continue
-            df["total"] = df.price * qty_int
-            df["note"] = np.where(df.stock >= qty_int, "", "only " + df.stock.astype(str) + " left")
-            df["flag"] = (df.stock >= qty_int).astype(int)
-            metric = "total" if sort_by.startswith("Price") else "eta_minutes"
-            df = df.sort_values(["flag", metric], ascending=[False, True])
-            best = df.iloc[0]
-            st.metric(
-                "Best Price" if metric == "total" else "Fastest ETA",
-                f"₹{best.total:.2f}" if metric == "total" else f"{best.eta_minutes} min",
-                f"{best.eta_minutes} min" if metric == "total" else f"₹{best.total:.2f}",
-            )
-            cards = "".join(
-                card(
-                    img=r.get("image_url") or "https://dummyimage.com/300x200/ffffff/000000&text=%20",
-                    vendor=r.vendor_name,
-                    total=r.total,
-                    stock_note=r.note,
-                )
-                for _, r in df.iterrows()
-            )
-            st.markdown(f'<div class="grid">{cards}</div>', unsafe_allow_html=True)
+            df=vendor_df[vendor_df.medicine_id==name_to_id.get(med)].copy()
+            if df.empty: st.warning("No vendor data."); continue
+            df["total"]=df.price*qty_int
+            df["note"]=np.where(df.stock>=qty_int,"","only "+df.stock.astype(str)+" left")
+            df["flag"]=(df.stock>=qty_int).astype(int)
+            df=df.sort_values(["flag","total" if sort_by.startswith("Price") else "eta_minutes"],
+                              ascending=[False,True])
+            best=df.iloc[0]
+            if sort_by.startswith("Price"):
+                st.metric("Best Price",f"₹{best.total:.2f}",f"{best.eta_minutes} min ETA")
+            else:
+                st.metric("Fastest ETA",f"{best.eta_minutes} min",f"₹{best.total:.2f}")
+            cards="".join(card("https://dummyimage.com/300x200/ffffff/000000&text=%20",
+                               r.vendor_name,r.total,r.note) for _,r in df.iterrows())
+            st.markdown(f'<div class="grid">{cards}</div>',unsafe_allow_html=True)
